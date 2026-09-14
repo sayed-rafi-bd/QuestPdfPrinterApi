@@ -5,6 +5,8 @@ using QuestPdfPrinterApi.Services;
 
 QuestPDF.Settings.License = LicenseType.Community;
 
+const int RowsPerPage = 10;
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSingleton<IMockProductsSource, MockProductsSource>();
@@ -24,6 +26,21 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 var app = builder.Build();
+
+// QuestPDF does one-time initialization (font metrics, SkiaSharp native init, layout
+// warmup) on the first document it ever renders in this process - that cost otherwise
+// lands on whichever HTTP request happens to be first. Pay it here instead, at startup.
+QuestPDF.Fluent.Document.Create(c => c.Page(p => p.Content().Text("warmup"))).GeneratePdf();
+
+// Times every request end-to-end and logs it, so all endpoints (including any added
+// later) get timing for free without instrumenting each one individually.
+app.Use(async (context, next) =>
+{
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    await next();
+    sw.Stop();
+    Console.WriteLine($"[TIMING] {context.Request.Method} {context.Request.Path}{context.Request.QueryString}: {sw.ElapsedMilliseconds} ms (status {context.Response.StatusCode})");
+});
 
 // Swagger is on for every environment here since this is a demo/testing project.
 // Gate it behind app.Environment.IsDevelopment() before this goes anywhere near production.
@@ -54,12 +71,12 @@ app.MapGet("/api/mock/products", (IMockProductsSource source, int pages = 1) =>
     if (pages < 1)
         return Results.BadRequest(new { error = "pages must be 1 or greater." });
 
-    var products = source.GenerateProducts(pages);
+    var products = source.GenerateProducts(pages * RowsPerPage);
     return Results.Ok(products);
 })
 .WithName("GetMockProducts")
 .WithSummary("Mock products API")
-.WithDescription("Stand-in for an external API. Returns a JSON array of randomly generated products - pages=1 gives a 1-item array, pages=10 gives a 10-item array, and so on.")
+.WithDescription("Stand-in for an external API. Returns a JSON array of randomly generated products. pages=1 gives 10 items, pages=3 gives 30 items, etc.")
 .Produces<List<MockProduct>>(StatusCodes.Status200OK)
 .ProducesValidationProblem(StatusCodes.Status400BadRequest);
 
@@ -73,7 +90,7 @@ app.MapGet("/api/mock/products/pdf", (IMockProductsSource source, IMockProductsP
     if (pages < 1)
         return Results.BadRequest(new { error = "pages must be 1 or greater." });
 
-    var products = source.GenerateProducts(pages);
+    var products = source.GenerateProducts(pages * RowsPerPage);
 
     var document = pdf.BuildProductsDocument(products, resolvedSize);
     var bytes = document.GeneratePdf();
@@ -81,7 +98,7 @@ app.MapGet("/api/mock/products/pdf", (IMockProductsSource source, IMockProductsP
 })
 .WithName("DownloadMockProductsPdf")
 .WithSummary("Download the mock products PDF directly")
-.WithDescription("Generates mock product data in-process (pages controls the array length) and renders it as a PDF table. Optional ?pageSize=Letter.")
+.WithDescription("Generates mock product data in-process and renders it as a PDF table. pages controls PDF pages (10 rows per page). Optional ?pageSize=Letter.")
 .Produces(StatusCodes.Status200OK, contentType: "application/pdf")
 .ProducesValidationProblem(StatusCodes.Status400BadRequest);
 
@@ -94,13 +111,13 @@ app.MapPost("/api/mock/products/preview", (MockProductsPreviewRequest request, I
     if (request.Pages < 1)
         return Results.BadRequest(new { error = "pages must be 1 or greater." });
 
-    var products = source.GenerateProducts(request.Pages);
+    var products = source.GenerateProducts(request.Pages * RowsPerPage);
     var document = pdf.BuildProductsDocument(products, pageSize);
     return delivery.Preview(document, request.CompanionPort, $"mock products report ({products.Count} item(s))");
 })
 .WithName("PreviewMockProducts")
 .WithSummary("Preview the mock products report in the Companion App")
-.WithDescription("Generates mock product data in-process (pages controls the array length), builds the PDF, and pushes it to a running Companion App instance (set companionPort to override the default 12500). Nothing is saved or printed.")
+.WithDescription("Generates mock product data in-process, builds the PDF, and pushes it to a running Companion App instance. pages controls PDF pages (10 rows per page).")
 .Produces(StatusCodes.Status200OK)
 .ProducesValidationProblem(StatusCodes.Status400BadRequest);
 
@@ -113,13 +130,13 @@ app.MapPost("/api/mock/products/print", async (MockProductsPrintRequest request,
     if (request.Pages < 1)
         return Results.BadRequest(new { error = "pages must be 1 or greater." });
 
-    var products = source.GenerateProducts(request.Pages);
+    var products = source.GenerateProducts(request.Pages * RowsPerPage);
     var document = pdf.BuildProductsDocument(products, pageSize);
     return await delivery.PrintAsync(document, request.PrinterName, $"mock products report ({products.Count} item(s))", ct);
 })
 .WithName("PrintMockProducts")
 .WithSummary("Print the mock products report")
-.WithDescription("Generates mock product data in-process (pages controls the array length), builds the PDF, and sends it straight to the given printer in a single job (Windows: via SumatraPDF in Tools/SumatraPDF; Linux/macOS: via CUPS's lp). Use GET /api/printers for valid printerName values.")
+.WithDescription("Generates mock product data in-process, builds the PDF, and sends it to the given printer. pages controls PDF pages (10 rows per page). Use GET /api/printers for valid printerName values.")
 .Produces(StatusCodes.Status200OK)
 .ProducesValidationProblem(StatusCodes.Status400BadRequest);
 

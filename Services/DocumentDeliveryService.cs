@@ -50,15 +50,28 @@ public class DocumentDeliveryService : IDocumentDeliveryService
         var filePath = Path.Combine(Path.GetTempPath(), $"doc-{Guid.NewGuid():N}.pdf");
         document.GeneratePdf(filePath);
 
-        try
+        // Fire-and-forget: hand the job to the OS print pipeline (SumatraPDF/lp) without
+        // waiting for it to finish. That wait is real OS/driver time we can't shrink, so
+        // we no longer block the HTTP response on it. Use CancellationToken.None here -
+        // the request's ct gets cancelled as soon as the response is sent, which would
+        // otherwise abort the print job right after we told the caller it was queued.
+        _ = Task.Run(async () =>
         {
-            await _printer.PrintFileAsync(filePath, printerName, ct);
-        }
-        finally
-        {
-            File.Delete(filePath);
-        }
+            try
+            {
+                await _printer.PrintFileAsync(filePath, printerName, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[PRINT ERROR] '{label}' to printer '{printerName}' failed: {ex}");
+            }
+            finally
+            {
+                try { File.Delete(filePath); }
+                catch (Exception ex) { Console.Error.WriteLine($"[PRINT ERROR] Failed to delete temp file '{filePath}': {ex}"); }
+            }
+        });
 
-        return Results.Ok(new { message = $"Sent {label} to printer '{printerName}'." });
+        return Results.Ok(new { message = $"Queued {label} for printer '{printerName}'. Check server logs for completion/errors." });
     }
 }

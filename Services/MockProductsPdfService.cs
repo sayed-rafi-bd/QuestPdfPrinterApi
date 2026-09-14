@@ -12,6 +12,8 @@ public interface IMockProductsPdfService
 
 public class MockProductsPdfService : IMockProductsPdfService
 {
+    private const int RowsPerPage = 10;
+
     public IDocument BuildProductsDocument(List<MockProduct> products, PageSize pageSize)
     {
         var document = Document.Create(container =>
@@ -19,60 +21,72 @@ public class MockProductsPdfService : IMockProductsPdfService
             container.Page(page =>
             {
                 page.Size(pageSize);
-                page.Margin(40);
-                page.DefaultTextStyle(x => x.FontSize(11));
+                page.MarginVertical(20);
+                page.MarginHorizontal(25);
+                page.DefaultTextStyle(x => x.FontSize(9));
 
                 page.Header().Column(col =>
                 {
-                    col.Item().Text("Mock Products Report").FontSize(20).Bold();
-                    col.Item().PaddingTop(2)
+                    col.Item().Text("Mock Products Report").FontSize(16).Bold();
+                    col.Item().PaddingTop(1)
                         .Text($"Generated {DateTime.Now:yyyy-MM-dd HH:mm}  ·  {products.Count} item(s)")
-                        .FontSize(9).FontColor(Colors.Grey.Darken1);
-                    col.Item().PaddingTop(10).LineHorizontal(1).LineColor(Colors.Grey.Lighten2);
+                        .FontSize(8).FontColor(Colors.Grey.Darken1);
+                    col.Item().PaddingTop(4).LineHorizontal(0.5f).LineColor(Colors.Grey.Lighten2);
                 });
 
-                page.Content().PaddingVertical(15).Table(table =>
+                page.Content().Column(content =>
                 {
-                    table.ColumnsDefinition(c =>
-                    {
-                        c.ConstantColumn(35);
-                        c.RelativeColumn(2);
-                        c.RelativeColumn();
-                        c.ConstantColumn(70);
-                        c.ConstantColumn(50);
-                        c.ConstantColumn(80);
-                    });
+                    var chunks = products.Chunk(RowsPerPage).ToList();
 
-                    table.Header(header =>
+                    for (int i = 0; i < chunks.Count; i++)
                     {
-                        header.Cell().Element(HeaderCell).Text("#");
-                        header.Cell().Element(HeaderCell).Text("Name");
-                        header.Cell().Element(HeaderCell).Text("Category");
-                        header.Cell().Element(HeaderCell).Text("Price");
-                        header.Cell().Element(HeaderCell).Text("Stock");
-                        header.Cell().Element(HeaderCell).Text("Created");
+                        if (i > 0)
+                            content.Item().PageBreak();
 
-                        static IContainer HeaderCell(IContainer c) => c
-                            .DefaultTextStyle(x => x.Bold())
-                            .PaddingVertical(5)
-                            .BorderBottom(1)
-                            .BorderColor(Colors.Grey.Darken1);
-                    });
+                        content.Item().PaddingVertical(6).Table(table =>
+                        {
+                            table.ColumnsDefinition(c =>
+                            {
+                                c.ConstantColumn(25);
+                                c.RelativeColumn(2);
+                                c.RelativeColumn();
+                                c.ConstantColumn(55);
+                                c.ConstantColumn(40);
+                                c.ConstantColumn(65);
+                            });
 
-                    foreach (var product in products)
-                    {
-                        table.Cell().Element(BodyCell).Text(product.Id.ToString());
-                        table.Cell().Element(BodyCell).Text(product.Name);
-                        table.Cell().Element(BodyCell).Text(product.Category);
-                        table.Cell().Element(BodyCell).Text($"${product.Price:0.00}");
-                        table.Cell().Element(BodyCell).Text(product.Stock.ToString());
-                        table.Cell().Element(BodyCell).Text(product.CreatedAt.ToString("yyyy-MM-dd"));
+                            table.Header(header =>
+                            {
+                                header.Cell().Element(HeaderCell).Text("#");
+                                header.Cell().Element(HeaderCell).Text("Name");
+                                header.Cell().Element(HeaderCell).Text("Category");
+                                header.Cell().Element(HeaderCell).Text("Price");
+                                header.Cell().Element(HeaderCell).Text("Stock");
+                                header.Cell().Element(HeaderCell).Text("Created");
+
+                                static IContainer HeaderCell(IContainer c) => c
+                                    .DefaultTextStyle(x => x.Bold())
+                                    .PaddingVertical(2)
+                                    .BorderBottom(0.5f)
+                                    .BorderColor(Colors.Grey.Darken1);
+                            });
+
+                            foreach (var product in chunks[i])
+                            {
+                                table.Cell().Element(BodyCell).Text(product.Id.ToString());
+                                table.Cell().Element(BodyCell).Text(product.Name);
+                                table.Cell().Element(BodyCell).Text(product.Category);
+                                table.Cell().Element(BodyCell).Text($"${product.Price:0.00}");
+                                table.Cell().Element(BodyCell).Text(product.Stock.ToString());
+                                table.Cell().Element(BodyCell).Text(product.CreatedAt.ToString("yyyy-MM-dd"));
+                            }
+
+                            static IContainer BodyCell(IContainer c) => c
+                                .PaddingVertical(2)
+                                .BorderBottom(0.5f)
+                                .BorderColor(Colors.Grey.Lighten2);
+                        });
                     }
-
-                    static IContainer BodyCell(IContainer c) => c
-                        .PaddingVertical(4)
-                        .BorderBottom(1)
-                        .BorderColor(Colors.Grey.Lighten2);
                 });
 
                 page.Footer().AlignCenter().Text(x =>
