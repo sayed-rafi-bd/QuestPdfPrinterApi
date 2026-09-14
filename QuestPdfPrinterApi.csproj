@@ -13,6 +13,11 @@
          if this ever ships inside a production app for an organization over $1M revenue. -->
     <PackageReference Include="QuestPDF" Version="2026.8.0" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+    <!-- QuestPDF has no built-in barcode primitive - ZXing.Net encodes the Code128
+         barcode and SkiaSharp turns its pixel data into a PNG that QuestPDF's Image()
+         element can embed on the label. -->
+    <PackageReference Include="ZXing.Net" Version="0.16.10" />
+    <PackageReference Include="SkiaSharp" Version="2.88.8" />
   </ItemGroup>
 
   <ItemGroup>
