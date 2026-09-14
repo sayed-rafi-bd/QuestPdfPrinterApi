@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>QuestPdfPrinterApi</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Free "Community" tier at this revenue/usage level - see QuestPDF pricing page
+         if this ever ships inside a production app for an organization over $1M revenue. -->
+    <PackageReference Include="QuestPDF" Version="2026.8.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Drop the portable SumatraPDF.exe build in Tools/SumatraPDF (see that folder's
+         README) and it gets copied next to the app's own binaries on every build, so
+         appsettings.json's relative "Printing:SumatraPdfPath" can find it. Matches zero
+         files (no build error) until you actually put something there. -->
+    <None Include="Tools\SumatraPDF\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
