@@ -27,13 +27,8 @@ builder.Services.AddSwaggerGen(options =>
 
 var app = builder.Build();
 
-// QuestPDF does one-time initialization (font metrics, SkiaSharp native init, layout
-// warmup) on the first document it ever renders in this process - that cost otherwise
-// lands on whichever HTTP request happens to be first. Pay it here instead, at startup.
 QuestPDF.Fluent.Document.Create(c => c.Page(p => p.Content().Text("warmup"))).GeneratePdf();
 
-// Times every request end-to-end and logs it, so all endpoints (including any added
-// later) get timing for free without instrumenting each one individually.
 app.Use(async (context, next) =>
 {
     var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -42,8 +37,6 @@ app.Use(async (context, next) =>
     Console.WriteLine($"[TIMING] {context.Request.Method} {context.Request.Path}{context.Request.QueryString}: {sw.ElapsedMilliseconds} ms (status {context.Response.StatusCode})");
 });
 
-// Swagger is on for every environment here since this is a demo/testing project.
-// Gate it behind app.Environment.IsDevelopment() before this goes anywhere near production.
 app.UseSwagger();
 app.UseSwaggerUI(options =>
 {
@@ -51,7 +44,6 @@ app.UseSwaggerUI(options =>
     options.RoutePrefix = "swagger";
 });
 
-// GET /api/printers - list printers the OS currently knows about
 app.MapGet("/api/printers", async (IPrinterService printers, CancellationToken ct) =>
 {
     var names = await printers.GetAvailablePrintersAsync(ct);
@@ -71,12 +63,12 @@ app.MapGet("/api/mock/products", (IMockProductsSource source, int pages = 1) =>
     if (pages < 1)
         return Results.BadRequest(new { error = "pages must be 1 or greater." });
 
-    var products = source.GenerateProducts(pages * RowsPerPage);
+    var products = source.GenerateProducts(pages);
     return Results.Ok(products);
 })
 .WithName("GetMockProducts")
 .WithSummary("Mock products API")
-.WithDescription("Stand-in for an external API. Returns a JSON array of randomly generated products. pages=1 gives 10 items, pages=3 gives 30 items, etc.")
+.WithDescription("Stand-in for an external API. Returns a JSON array of randomly generated products - pages=1 gives a 1-item array, pages=10 gives a 10-item array, and so on.")
 .Produces<List<MockProduct>>(StatusCodes.Status200OK)
 .ProducesValidationProblem(StatusCodes.Status400BadRequest);
 
