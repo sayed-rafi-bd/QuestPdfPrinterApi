@@ -93,7 +93,7 @@ public class PrinterService : IPrinterService
         // Name without breaking on printer names that contain commas or newlines.
         var output = await RunAsync(
             "powershell",
-            "-NoProfile -Command \"Get-Printer | Select-Object Name, PortName | ConvertTo-Json -Compress\"",
+            new[] { "-NoProfile", "-Command", "Get-Printer | Select-Object Name, PortName | ConvertTo-Json -Compress" },
             ct);
 
         if (string.IsNullOrWhiteSpace(output))
@@ -165,8 +165,7 @@ public class PrinterService : IPrinterService
         if (dpi is int resolvedDpi)
             await TrySetDpiAsync(printerName, resolvedDpi, ct);
 
-        var args = $"-print-to \"{printerName}\" -print-settings \"noscale\" -silent \"{filePath}\"";
-        await RunAsync(_sumatraPath, args, ct);
+        await RunAsync(_sumatraPath, new[] { "-print-to", printerName, "-print-settings", "noscale", "-silent", filePath }, ct);
     }
 
     /// <summary>
@@ -180,6 +179,10 @@ public class PrinterService : IPrinterService
     private static async Task TrySetDpiAsync(string printerName, int dpi, CancellationToken ct)
     {
         // Single-quoted WMI filter value, so escape embedded single quotes by doubling them.
+        // These double quotes are PowerShell script syntax, not command-line escaping - the
+        // script is passed as one element of ArgumentList (see RunAsync), so .NET handles
+        // the Win32 argv quoting around the whole thing and there's no need (and no safe
+        // way) to also hand-wrap it in an outer pair of quotes here.
         var escapedName = printerName.Replace("'", "''");
         var script =
             $"$cfg = Get-WmiObject -Class Win32_PrinterConfiguration -Filter \"Name='{escapedName}'\"; " +
@@ -188,7 +191,7 @@ public class PrinterService : IPrinterService
 
         try
         {
-            await RunAsync("powershell", $"-NoProfile -Command \"{script}\"", ct);
+            await RunAsync("powershell", new[] { "-NoProfile", "-Command", script }, ct);
         }
         catch (Exception ex)
         {
@@ -205,15 +208,17 @@ public class PrinterService : IPrinterService
         }
     }
 
-    private static async Task<string> RunAsync(string fileName, string arguments, CancellationToken ct)
+    private static async Task<string> RunAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo(fileName, arguments)
+        var psi = new ProcessStartInfo(fileName)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        foreach (var arg in arguments)
+            psi.ArgumentList.Add(arg);
 
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException($"Failed to start process '{fileName}'");
@@ -229,7 +234,7 @@ public class PrinterService : IPrinterService
         var stderr = stderrTask.Result;
 
         if (process.ExitCode != 0)
-            throw new InvalidOperationException($"'{fileName} {arguments}' exited {process.ExitCode}: {stderr}");
+            throw new InvalidOperationException($"'{fileName} {string.Join(' ', arguments)}' exited {process.ExitCode}: {stderr}");
 
         return stdout;
     }
