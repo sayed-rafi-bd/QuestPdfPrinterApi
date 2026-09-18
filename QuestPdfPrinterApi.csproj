@@ -26,6 +26,12 @@
          appsettings.json's relative "Printing:SumatraPdfPath" can find it. Matches zero
          files (no build error) until you actually put something there. -->
     <None Include="Tools\SumatraPDF\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Same pattern for the CJK font PickingSlipPdfService needs: drop a .ttf/.otf (e.g.
+         NotoSansJP-Regular.ttf from Google Fonts) in Tools/Fonts and it's copied next to
+         the app's own binaries, so appsettings.json's relative "Fonts:NotoSansJpPath" can
+         find it. Matches zero files (no build error) until you actually put something
+         there - Program.cs logs a warning and continues without it. -->
+    <None Include="Tools\Fonts\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

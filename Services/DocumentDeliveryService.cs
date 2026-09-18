@@ -14,9 +14,12 @@ public interface IDocumentDeliveryService
     IResult Preview(IDocument document, int? companionPort, string label);
 
     /// <summary>
-    /// Generates the PDF and sends it straight to the given printer.
+    /// Generates the PDF and sends it straight to the given printer. dpiOverride is
+    /// optional and per-job - see PrinterService's remarks on why it's opt-in rather than
+    /// a single global setting (in short: not every printer, especially Bluetooth/thermal
+    /// label printers, supports the same resolution).
     /// </summary>
-    Task<IResult> PrintAsync(IDocument document, string printerName, string label, CancellationToken ct);
+    Task<IResult> PrintAsync(IDocument document, string printerName, string label, int? dpiOverride, CancellationToken ct);
 }
 
 public class DocumentDeliveryService : IDocumentDeliveryService
@@ -42,7 +45,7 @@ public class DocumentDeliveryService : IDocumentDeliveryService
         });
     }
 
-    public async Task<IResult> PrintAsync(IDocument document, string printerName, string label, CancellationToken ct)
+    public async Task<IResult> PrintAsync(IDocument document, string printerName, string label, int? dpiOverride, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(printerName))
             return Results.BadRequest(new { error = "printerName is required." });
@@ -59,7 +62,7 @@ public class DocumentDeliveryService : IDocumentDeliveryService
         {
             try
             {
-                await _printer.PrintFileAsync(filePath, printerName, CancellationToken.None);
+                await _printer.PrintFileAsync(filePath, printerName, dpiOverride, CancellationToken.None);
             }
             catch (Exception ex)
             {
