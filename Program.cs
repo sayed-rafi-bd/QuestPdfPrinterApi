@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using QuestPDF.Fluent;
 using QuestPDF.Infrastructure;
 using QuestPdfPrinterApi.Models;
@@ -7,8 +8,13 @@ QuestPDF.Settings.License = LicenseType.Community;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddSingleton<IMockPickingSlipsSource, MockPickingSlipsSource>();
-builder.Services.AddSingleton<IPickingSlipPdfService, PickingSlipPdfService>();
+// So PageOrientation/PrintFitMode are accepted/returned as "Portrait"/"Contain" etc. in
+// JSON request/response bodies (and shown that way in Swagger) instead of raw integers.
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+
+builder.Services.AddSingleton<IMockShippingLabelsSource, MockShippingLabelsSource>();
+builder.Services.AddSingleton<IShippingLabelPdfService, ShippingLabelPdfService>();
 builder.Services.AddSingleton<IPrinterService, PrinterService>();
 builder.Services.AddSingleton<IDocumentDeliveryService, DocumentDeliveryService>();
 builder.Services.AddEndpointsApiExplorer();
@@ -18,7 +24,7 @@ builder.Services.AddSwaggerGen(options =>
     {
         Title = "QuestPDF Printer API",
         Version = "v1",
-        Description = "Builds Japanese picking/inspection slips (検品書) with QuestPDF, from mock data " +
+        Description = "Builds Japanese carrier shipping labels (送り状) with QuestPDF, from mock data " +
                       "only. Download, preview, and print are all backed by their respective mock " +
                       "sources - preview and print each have their own endpoint."
     });
@@ -28,7 +34,7 @@ var app = builder.Build();
 
 // Bundle a CJK font the same way PrinterService bundles SumatraPDF.exe: drop the
 // .ttf/.otf in Tools/Fonts (copied next to the app's binaries by the .csproj), point
-// "Fonts:NotoSansJpPath" at it if the location differs. PickingSlipPdfService's Japanese
+// "Fonts:NotoSansJpPath" at it if the location differs. ShippingLabelPdfService's Japanese
 // text needs this registered before any PDF is generated - QuestPDF.Helpers's builtin
 // "Helvetica" has no CJK glyphs. Best-effort and non-fatal: log and continue if the font
 // isn't there yet, so the missing-glyph symptom is easy to diagnose from the log.
@@ -42,7 +48,7 @@ if (File.Exists(resolvedFontPath))
 else
 {
     Console.Error.WriteLine(
-        $"[FONT WARNING] '{resolvedFontPath}' not found - picking slips (検品書) will render with " +
+        $"[FONT WARNING] '{resolvedFontPath}' not found - shipping labels (送り状) will render with " +
         $"missing glyphs until a font is placed there or \"Fonts:NotoSansJpPath\" is set.");
 }
 
@@ -76,73 +82,91 @@ app.MapGet("/api/printers", async (IPrinterService printers, CancellationToken c
                   "queues apart; see PrinterInfo's remarks for how IsBluetooth is detected.")
 .Produces<List<PrinterInfo>>(StatusCodes.Status200OK);
 
-// ---- Mock picking slips API (self-hosted stand-in "external" data source) ----
+// ---- Mock shipping labels API (self-hosted stand-in "external" data source) ----
 // count controls the array length: count=1 -> 1 object, count=10 -> 10 objects. Each
-// slip is one page, so count == page count for the PDF endpoints below.
+// label is one page, so count == page count for the PDF endpoints below. PageSize/
+// Orientation are resolved once here via PageSizeResolver and handed to the PDF service
+// as a concrete PageSize - see its own remarks for why (the default page size is this
+// API's 110mm x 84mm label, not A4).
 
-// GET /api/mock/picking-slips?count=1 - the mock API route itself
-app.MapGet("/api/mock/picking-slips", (IMockPickingSlipsSource source, int count = 1) =>
+// GET /api/mock/shipping-labels?count=1 - the mock API route itself
+app.MapGet("/api/mock/shipping-labels", (IMockShippingLabelsSource source, int count = 1) =>
 {
     if (count < 1)
         return Results.BadRequest(new { error = "count must be 1 or greater." });
 
-    var slips = source.GenerateSlips(count);
-    return Results.Ok(slips);
+    var labels = source.GenerateLabels(count);
+    return Results.Ok(labels);
 })
-.WithName("GetMockPickingSlips")
-.WithSummary("Mock picking slips API")
-.WithDescription("Stand-in for an external API. Returns a JSON array of randomly generated picking/inspection slips (検品書) - count=1 gives a 1-item array, count=10 gives a 10-item array, and so on.")
-.Produces<List<PickingSlip>>(StatusCodes.Status200OK)
+.WithName("GetMockShippingLabels")
+.WithSummary("Mock shipping labels API")
+.WithDescription("Stand-in for an external API. Returns a JSON array of randomly generated carrier shipping labels (送り状) - count=1 gives a 1-item array, count=10 gives a 10-item array, and so on.")
+.Produces<List<ShippingLabel>>(StatusCodes.Status200OK)
 .ProducesValidationProblem(StatusCodes.Status400BadRequest);
 
-// GET /api/mock/picking-slips/pdf?count=1&pageSize=A4 - generates mock slips in-process
-// and turns them straight into picking-slip pages (one slip per page)
-app.MapGet("/api/mock/picking-slips/pdf", (IMockPickingSlipsSource source, IPickingSlipPdfService pdf, int count = 1, string? pageSize = null) =>
+// GET /api/mock/shipping-labels/pdf?count=1&pageSize=A4&orientation=Portrait - generates
+// mock labels in-process and turns them straight into label pages (one label per page)
+app.MapGet("/api/mock/shipping-labels/pdf", (IMockShippingLabelsSource source, IShippingLabelPdfService pdf, int count = 1, string? pageSize = null, PageOrientation orientation = PageOrientation.Landscape) =>
 {
     if (count < 1)
         return Results.BadRequest(new { error = "count must be 1 or greater." });
 
-    var slips = source.GenerateSlips(count);
+    if (!PageSizeResolver.TryResolve(pageSize, orientation, out var resolvedPageSize, out var pageSizeError))
+        return Results.BadRequest(new { error = pageSizeError });
 
-    var document = pdf.BuildSlipsDocument(slips, pageSize);
+    var labels = source.GenerateLabels(count);
+
+    var document = pdf.BuildLabelsDocument(labels, resolvedPageSize);
     var bytes = document.GeneratePdf();
-    return Results.File(bytes, "application/pdf", $"picking-slips-{count}.pdf");
+    return Results.File(bytes, "application/pdf", $"shipping-labels-{count}.pdf");
 })
-.WithName("DownloadMockPickingSlipsPdf")
-.WithSummary("Download the mock picking slips PDF directly")
-.WithDescription("Generates mock picking-slip data in-process and renders it as one page per slip. count controls how many slips (pages); pageSize controls the paper size (A4, Letter, etc. - defaults to A4).")
+.WithName("DownloadMockShippingLabelsPdf")
+.WithSummary("Download the mock shipping labels PDF directly")
+.WithDescription("Generates mock shipping-label data in-process and renders it as one page per label. count controls how many labels (pages); pageSize/orientation control the page geometry (defaults to this API's 110mm x 84mm landscape label - pass e.g. pageSize=A4 for a full sheet, or orientation=Portrait to swap width/height).")
 .Produces(StatusCodes.Status200OK, contentType: "application/pdf")
 .ProducesValidationProblem(StatusCodes.Status400BadRequest);
 
-// POST /api/mock/picking-slips/preview - build the mock picking slips PDF and push it to the Companion App
-app.MapPost("/api/mock/picking-slips/preview", (PickingSlipsPreviewRequest request, IMockPickingSlipsSource source, IPickingSlipPdfService pdf, IDocumentDeliveryService delivery) =>
+// POST /api/mock/shipping-labels/preview - build the mock shipping labels PDF and push it to the Companion App
+app.MapPost("/api/mock/shipping-labels/preview", (ShippingLabelsPreviewRequest request, IMockShippingLabelsSource source, IShippingLabelPdfService pdf, IDocumentDeliveryService delivery) =>
 {
     if (request.Count < 1)
         return Results.BadRequest(new { error = "count must be 1 or greater." });
 
-    var slips = source.GenerateSlips(request.Count);
-    var document = pdf.BuildSlipsDocument(slips, request.PageSize);
-    return delivery.Preview(document, request.CompanionPort, $"picking slips ({slips.Count} slip(s))");
+    if (!PageSizeResolver.TryResolve(request.PageSize, request.Orientation, out var resolvedPageSize, out var pageSizeError))
+        return Results.BadRequest(new { error = pageSizeError });
+
+    var labels = source.GenerateLabels(request.Count);
+    var document = pdf.BuildLabelsDocument(labels, resolvedPageSize);
+    return delivery.Preview(document, request.CompanionPort, $"shipping labels ({labels.Count} label(s))");
 })
-.WithName("PreviewMockPickingSlips")
-.WithSummary("Preview the mock picking slips in the Companion App")
-.WithDescription("Generates mock picking-slip data in-process, builds the PDF, and pushes it to a running Companion App instance. count controls how many slips (pages).")
+.WithName("PreviewMockShippingLabels")
+.WithSummary("Preview the mock shipping labels in the Companion App")
+.WithDescription("Generates mock shipping-label data in-process, builds the PDF, and pushes it to a running Companion App instance. count controls how many labels (pages); pageSize/orientation control the page geometry as above.")
 .Produces(StatusCodes.Status200OK)
 .ProducesValidationProblem(StatusCodes.Status400BadRequest);
 
-// POST /api/mock/picking-slips/print - build the mock picking slips PDF and send it straight to a printer
-app.MapPost("/api/mock/picking-slips/print", async (PickingSlipsPrintRequest request, IMockPickingSlipsSource source, IPickingSlipPdfService pdf, IDocumentDeliveryService delivery, CancellationToken ct) =>
+// POST /api/mock/shipping-labels/print - build the mock shipping labels PDF and send it straight to a printer
+app.MapPost("/api/mock/shipping-labels/print", async (ShippingLabelsPrintRequest request, IMockShippingLabelsSource source, IShippingLabelPdfService pdf, IDocumentDeliveryService delivery, CancellationToken ct) =>
 {
     if (request.Count < 1)
         return Results.BadRequest(new { error = "count must be 1 or greater." });
 
-    var slips = source.GenerateSlips(request.Count);
-    var document = pdf.BuildSlipsDocument(slips, request.PageSize);
-    return await delivery.PrintAsync(document, request.PrinterName, $"picking slips ({slips.Count} slip(s))", request.Dpi, ct);
+    if (!PageSizeResolver.TryResolve(request.PageSize, request.Orientation, out var resolvedPageSize, out var pageSizeError))
+        return Results.BadRequest(new { error = pageSizeError });
+
+    // Derived from the PDF's own resolved geometry rather than echoing request.Orientation
+    // directly, so the "-print-settings" orientation token sent to the printer can never
+    // drift out of sync with how the page was actually built - see
+    // PrinterService.PrintFileAsync's remarks.
+    var resolvedOrientation = resolvedPageSize.Width > resolvedPageSize.Height ? PageOrientation.Landscape : PageOrientation.Portrait;
+
+    var labels = source.GenerateLabels(request.Count);
+    var document = pdf.BuildLabelsDocument(labels, resolvedPageSize);
+    return await delivery.PrintAsync(document, request.PrinterName, $"shipping labels ({labels.Count} label(s))", request.Dpi, request.FitMode, resolvedOrientation, ct);
 })
-.WithName("PrintMockPickingSlips")
-.WithSummary("Print the mock picking slips")
-.WithDescription("Generates mock picking-slip data in-process, builds the PDF, and sends it to the given printer. count controls how many slips (pages). Use GET /api/printers for valid printerName values. Dpi is optional - omit it (recommended for Bluetooth/thermal label printers) to print at the printer's own current resolution instead of forcing one.")
+.WithName("PrintMockShippingLabels")
+.WithSummary("Print the mock shipping labels")
+.WithDescription("Generates mock shipping-label data in-process, builds the PDF, and sends it to the given printer. count controls how many labels (pages). Use GET /api/printers for valid printerName values. Dpi is optional - omit it (recommended for Bluetooth/thermal label printers) to print at the printer's own current resolution instead of forcing one. fitMode controls how the driver reconciles the PDF against its configured paper size (Fit = no rescale, the default; Contain = scale to fit, preserving aspect ratio) - see PrintFitMode.")
 .Produces(StatusCodes.Status200OK)
 .ProducesValidationProblem(StatusCodes.Status400BadRequest);
 

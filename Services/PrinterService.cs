@@ -7,7 +7,13 @@ namespace QuestPdfPrinterApi.Services;
 public interface IPrinterService
 {
     Task<List<PrinterInfo>> GetAvailablePrintersAsync(CancellationToken ct = default);
-    Task PrintFileAsync(string filePath, string printerName, int? dpiOverride, CancellationToken ct = default);
+    Task PrintFileAsync(
+        string filePath,
+        string printerName,
+        int? dpiOverride,
+        PrintFitMode fitMode = PrintFitMode.Fit,
+        PageOrientation orientation = PageOrientation.Landscape,
+        CancellationToken ct = default);
 }
 
 /// <summary>
@@ -137,21 +143,34 @@ public class PrinterService : IPrinterService
     /// bitmap. Both are a materially different print pipeline from this one - say the word
     /// if you want either implemented instead of/alongside SumatraPDF.
     ///
-    /// "-print-settings noscale" is passed on every job. Without it, SumatraPDF's default
-    /// behavior is to fit-to-page: rescale the PDF to match whatever paper size the printer
-    /// driver is currently configured for. Every document this API builds is already
-    /// generated at its intended physical page size (label stock size for labels, the
-    /// requested pageSize for slips), so that rescale is pure downside here - if the
-    /// driver's configured paper size doesn't match to the pixel, the extra resample step
-    /// softens text and, worse, barcodes, which is a common source of "print quality is
-    /// bad" complaints independent of DPI. noscale prints the page at 1:1 instead, so
-    /// output stays as sharp as the chosen DPI actually allows. The tradeoff: if the
-    /// printer's configured paper size is genuinely wrong for the document (e.g. printing a
-    /// label to a queue still configured for Letter), noscale will make that mismatch
-    /// visible (offset/clipped) rather than silently papering over it with a blurry rescale
-    /// - which is the right failure mode, since it points at the actual misconfiguration.
+    /// "-print-settings" gets a comma-separated token list built from fitMode and
+    /// orientation, one token each:
+    ///  - fitMode: PrintFitMode.Fit (the default) -> "noscale"; PrintFitMode.Contain ->
+    ///    "fit". Without an explicit fitMode, SumatraPDF's own default behavior is to
+    ///    fit-to-page: rescale the PDF to match whatever paper size the printer driver is
+    ///    currently configured for. Every document this API builds is already generated at
+    ///    its intended physical page size (110mm x 84mm by default - see
+    ///    PageSizeResolver.BuildDefault), so that rescale is pure downside for the common
+    ///    case - if the driver's configured paper size doesn't match to the pixel, the extra
+    ///    resample step softens text and, worse, barcodes. "noscale" prints at 1:1 instead,
+    ///    so output stays as sharp as the chosen DPI actually allows; the tradeoff is that a
+    ///    genuinely wrong driver paper size (e.g. printing a label to a queue still
+    ///    configured for Letter) shows up as an offset/clipped print rather than being
+    ///    silently papered over - the right failure mode, since it points at the actual
+    ///    misconfiguration. Pass PrintFitMode.Contain instead when the printer's configured
+    ///    paper size is NOT known to match (e.g. previewing a label on a normal A4 office
+    ///    printer).
+    ///  - orientation: passed straight through as SumatraPDF's own "portrait"/"landscape"
+    ///    token so the physical print matches however the PDF's page was actually built
+    ///    (see PageSizeResolver) even if the printer driver's own default differs.
     /// </summary>
-    public async Task PrintFileAsync(string filePath, string printerName, int? dpiOverride, CancellationToken ct = default)
+    public async Task PrintFileAsync(
+        string filePath,
+        string printerName,
+        int? dpiOverride,
+        PrintFitMode fitMode = PrintFitMode.Fit,
+        PageOrientation orientation = PageOrientation.Landscape,
+        CancellationToken ct = default)
     {
         if (!File.Exists(_sumatraPath))
         {
@@ -165,7 +184,11 @@ public class PrinterService : IPrinterService
         if (dpi is int resolvedDpi)
             await TrySetDpiAsync(printerName, resolvedDpi, ct);
 
-        await RunAsync(_sumatraPath, new[] { "-print-to", printerName, "-print-settings", "noscale", "-silent", filePath }, ct);
+        var scaleToken = fitMode == PrintFitMode.Contain ? "fit" : "noscale";
+        var orientationToken = orientation == PageOrientation.Portrait ? "portrait" : "landscape";
+        var printSettings = $"{scaleToken},{orientationToken}";
+
+        await RunAsync(_sumatraPath, new[] { "-print-to", printerName, "-print-settings", printSettings, "-silent", filePath }, ct);
     }
 
     /// <summary>

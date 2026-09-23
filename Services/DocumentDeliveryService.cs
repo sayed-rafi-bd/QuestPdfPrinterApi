@@ -1,6 +1,7 @@
 using QuestPDF.Companion;
 using QuestPDF.Fluent;
 using QuestPDF.Infrastructure;
+using QuestPdfPrinterApi.Models;
 
 namespace QuestPdfPrinterApi.Services;
 
@@ -17,9 +18,18 @@ public interface IDocumentDeliveryService
     /// Generates the PDF and sends it straight to the given printer. dpiOverride is
     /// optional and per-job - see PrinterService's remarks on why it's opt-in rather than
     /// a single global setting (in short: not every printer, especially Bluetooth/thermal
-    /// label printers, supports the same resolution).
+    /// label printers, supports the same resolution). fitMode and orientation are passed
+    /// straight through to PrinterService.PrintFileAsync - see its remarks for what each
+    /// does.
     /// </summary>
-    Task<IResult> PrintAsync(IDocument document, string printerName, string label, int? dpiOverride, CancellationToken ct);
+    Task<IResult> PrintAsync(
+        IDocument document,
+        string printerName,
+        string label,
+        int? dpiOverride,
+        PrintFitMode fitMode,
+        PageOrientation orientation,
+        CancellationToken ct);
 }
 
 public class DocumentDeliveryService : IDocumentDeliveryService
@@ -45,7 +55,14 @@ public class DocumentDeliveryService : IDocumentDeliveryService
         });
     }
 
-    public async Task<IResult> PrintAsync(IDocument document, string printerName, string label, int? dpiOverride, CancellationToken ct)
+    public async Task<IResult> PrintAsync(
+        IDocument document,
+        string printerName,
+        string label,
+        int? dpiOverride,
+        PrintFitMode fitMode,
+        PageOrientation orientation,
+        CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(printerName))
             return Results.BadRequest(new { error = "printerName is required." });
@@ -62,7 +79,7 @@ public class DocumentDeliveryService : IDocumentDeliveryService
         {
             try
             {
-                await _printer.PrintFileAsync(filePath, printerName, dpiOverride, CancellationToken.None);
+                await _printer.PrintFileAsync(filePath, printerName, dpiOverride, fitMode, orientation, CancellationToken.None);
             }
             catch (Exception ex)
             {
