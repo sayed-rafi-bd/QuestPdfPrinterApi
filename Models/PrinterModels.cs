@@ -16,16 +16,15 @@ public record PrinterInfo(string Name, string PortName, bool IsBluetooth);
 
 /// <summary>
 /// How a print job should be scaled onto the printer's currently-configured paper/label
-/// size. Passed per-request (see ShippingLabelsPrintRequest.FitMode) rather than fixed,
-/// because the right choice depends on whether the target printer's paper size is known
-/// to match the PDF's own page size (see PrinterService.PrintFileAsync's remarks).
+/// size. Print-only: passed straight through to SumatraPDF (see
+/// PrinterService.PrintFileAsync's remarks) and never used to resize the generated PDF.
 /// </summary>
 public enum PrintFitMode
 {
     /// <summary>
     /// Print at the PDF's exact page size with no rescaling (SumatraPDF's "noscale").
     /// The default - correct whenever the PDF was generated at the same physical size as
-    /// the label/paper actually loaded (e.g. this API's 110mm x 84mm default), since any
+    /// the label/paper actually loaded (e.g. this API's ISO C7 default), since any
     /// rescale step there is pure downside: it softens text and barcodes for no benefit.
     /// If the printer's configured paper size doesn't actually match, mismatches show up
     /// as an offset/clipped print rather than being silently papered over - which is the
@@ -45,14 +44,15 @@ public enum PrintFitMode
 }
 
 /// <summary>
-/// Which way up the page is generated/printed. Passed per-request rather than baked into a
-/// single named page size, because the same physical dimensions (e.g. this API's 110mm x
-/// 84mm default label) can be wanted either way depending on how the label stock is loaded
-/// in a given printer.
+/// Which way up a page is oriented. Used two ways depending on the endpoint:
+/// /pdf and /preview pass it to PageSizeResolver to decide the *generated PDF's* own
+/// width/height. /print does NOT use it for that - there it's print-only, forwarded
+/// straight through to SumatraPDF as the physical printout's orientation (see
+/// PrinterService.PrintFileAsync's remarks), independent of how the PDF was built.
 /// </summary>
 public enum PageOrientation
 {
-    /// <summary>Width is the larger dimension - the default for this API's 110mm x 84mm label.</summary>
+    /// <summary>Width is the larger dimension - the default for this API's ISO C7 (114mm x 81mm) label.</summary>
     Landscape,
 
     /// <summary>Height is the larger dimension. Swaps the resolved page size's width/height if needed.</summary>

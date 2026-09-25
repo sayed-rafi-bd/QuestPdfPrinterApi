@@ -78,30 +78,33 @@ public class ShippingLabel
 
 /// <summary>
 /// Body for POST /api/mock/shipping-labels/preview. count=1 -> 1 label, count=10 -> 10
-/// labels, and so on. PageSize/Orientation control the generated PDF's own page geometry -
-/// see PageSizeResolver; PageSize defaults to this API's 110mm x 84mm label, and
-/// Orientation defaults to Landscape (that label's natural shape) - so a named PageSize
-/// that's naturally portrait (e.g. "A4") is swapped to landscape unless Orientation is
-/// explicitly set to Portrait.
+/// labels, and so on. PageSize controls the generated PDF's own page geometry - see
+/// PageSizeResolver; defaults to this API's ISO C7 (114mm x 81mm) landscape label. No
+/// Orientation here - preview always renders a named PageSize in its landscape form.
 /// </summary>
 public record ShippingLabelsPreviewRequest(
     int Count = 1,
     int? CompanionPort = null,
-    string? PageSize = null,
-    PageOrientation Orientation = PageOrientation.Landscape);
+    string? PageSize = null);
 
 /// <summary>
-/// Body for POST /api/mock/shipping-labels/print. Same Count/PageSize/Orientation contract
-/// as ShippingLabelsPreviewRequest (PageSize defaults to this API's 110mm x 84mm label,
-/// Orientation defaults to Landscape). PrinterName is required - use GET /api/printers to
-/// see what's available. Dpi is an optional per-job override (see PrinterService); omit it
-/// to print at the printer's own current default resolution, which is the right choice
-/// for most Bluetooth/thermal label printers since they usually only support one or two
-/// fixed native resolutions (commonly 203, 300, or 600 dpi) rather than an arbitrary value.
-/// FitMode controls how the printer driver reconciles the PDF's page against its own
-/// configured paper size - see PrintFitMode; defaults to Fit (no rescale), which is correct
-/// whenever the target is genuinely loaded with 110mm x 84mm label stock (or whatever
-/// PageSize was actually built at).
+/// Body for POST /api/mock/shipping-labels/print. PrinterName is required - use GET
+/// /api/printers to see what's available. Count controls how many labels/pages.
+///
+/// The PDF itself is always built at this API's default ISO C7 (114mm x 81mm) landscape
+/// label size - PageSize/Orientation/FitMode here do NOT change that geometry. Instead
+/// they're forwarded as-is to SumatraPDF's -print-settings for the physical print job (see
+/// PrinterService.PrintFileAsync):
+///  - PageSize becomes the "paper=" token - any value SumatraPDF/the driver accepts (a
+///    name like "A4", or a custom size like "76mm x 130mm"). Omit it to print on whatever
+///    paper the printer is currently configured for.
+///  - Orientation becomes "portrait"/"landscape" (default Landscape).
+///  - FitMode becomes "noscale" (Fit, the default) or "fit" (Contain).
+///
+/// Dpi is an optional per-job override (see PrinterService); omit it to print at the
+/// printer's own current default resolution, which is the right choice for most
+/// Bluetooth/thermal label printers since they usually only support one or two fixed
+/// native resolutions (commonly 203, 300, or 600 dpi) rather than an arbitrary value.
 /// </summary>
 public record ShippingLabelsPrintRequest(
     string PrinterName,

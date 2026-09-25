@@ -18,9 +18,10 @@ public interface IDocumentDeliveryService
     /// Generates the PDF and sends it straight to the given printer. dpiOverride is
     /// optional and per-job - see PrinterService's remarks on why it's opt-in rather than
     /// a single global setting (in short: not every printer, especially Bluetooth/thermal
-    /// label printers, supports the same resolution). fitMode and orientation are passed
-    /// straight through to PrinterService.PrintFileAsync - see its remarks for what each
-    /// does.
+    /// label printers, supports the same resolution). fitMode, orientation, and pageSize
+    /// are print-only settings passed straight through to PrinterService.PrintFileAsync -
+    /// see its remarks for what each does; none of them affect how the given document was
+    /// generated.
     /// </summary>
     Task<IResult> PrintAsync(
         IDocument document,
@@ -29,6 +30,7 @@ public interface IDocumentDeliveryService
         int? dpiOverride,
         PrintFitMode fitMode,
         PageOrientation orientation,
+        string? pageSize,
         CancellationToken ct);
 }
 
@@ -62,6 +64,7 @@ public class DocumentDeliveryService : IDocumentDeliveryService
         int? dpiOverride,
         PrintFitMode fitMode,
         PageOrientation orientation,
+        string? pageSize,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(printerName))
@@ -79,7 +82,7 @@ public class DocumentDeliveryService : IDocumentDeliveryService
         {
             try
             {
-                await _printer.PrintFileAsync(filePath, printerName, dpiOverride, fitMode, orientation, CancellationToken.None);
+                await _printer.PrintFileAsync(filePath, printerName, dpiOverride, fitMode, orientation, pageSize, CancellationToken.None);
             }
             catch (Exception ex)
             {
