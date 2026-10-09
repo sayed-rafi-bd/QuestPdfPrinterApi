@@ -1,7 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
+    <!-- Windows builds target net8.0-windows so the system tray icon (Services\TrayIcon.cs, a
+         Windows Forms NotifyIcon) is available. Other OSes build plain net8.0 and TrayIcon
+         compiles to a no-op (the WINDOWS symbol is only defined for net8.0-windows). -->
     <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework Condition="$([MSBuild]::IsOSPlatform('Windows'))">net8.0-windows</TargetFramework>
+    <UseWindowsForms Condition="'$(TargetFramework)' == 'net8.0-windows'">true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
@@ -19,6 +24,19 @@
          app runs with no console window. Normal `dotnet run` keeps the console. -->
     <OutputType Condition="'$(HideConsole)' == 'true'">WinExe</OutputType>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- UseWindowsForms would otherwise add System.Windows.Forms / System.Drawing as implicit
+         usings, whose type names (Size, Color, ...) collide with QuestPDF's. TrayIcon.cs imports
+         them itself. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The tray icon loads this next to the exe (the exe's own embedded icon is the fallback). -->
+    <None Update="Assets\icon.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- Free "Community" tier at this revenue/usage level - see QuestPDF pricing page

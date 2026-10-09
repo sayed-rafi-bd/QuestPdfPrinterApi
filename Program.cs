@@ -14,6 +14,8 @@ QuestPDF.Settings.License = LicenseType.Community;
 // --open-browser : open the UI in the default browser once the server is up.
 // --log-to-file  : write console output to %LocalAppData%\LabelApp\app.log (the installed
 //                  build has no console window, so this is where errors/timings go).
+// --no-tray      : don't show the system tray icon (Windows only; it's the way to open or exit the
+//                  app while it runs in the background).
 // Only one instance runs per user session; launching it again just opens the browser at the
 // running instance's URL. The mutex name must match AppMutex in installer/LabelApp.iss.
 var openBrowser = args.Contains("--open-browser");
@@ -93,6 +95,8 @@ builder.Services.AddSingleton<IHotspotService, HotspotService>();
 
 var app = builder.Build();
 
+TrayIcon? tray = null;
+
 app.Lifetime.ApplicationStarted.Register(() =>
 {
     var url = (app.Urls.FirstOrDefault() ?? "http://localhost:5080")
@@ -102,11 +106,14 @@ app.Lifetime.ApplicationStarted.Register(() =>
         .Replace("://+", "://localhost");
     try { File.WriteAllText(urlFile, url); } catch { /* best-effort */ }
     Console.WriteLine($"[APP] Listening on {url}");
+    if (OperatingSystem.IsWindows() && !args.Contains("--no-tray"))
+        tray = new TrayIcon("Shipping Label Printer", () => OpenBrowser(url), () => app.Lifetime.StopApplication());
     if (openBrowser)
         OpenBrowser(url);
 });
 app.Lifetime.ApplicationStopping.Register(() =>
 {
+    tray?.Dispose();    // remove the tray icon right away, before the hotspot shutdown below
     try { File.Delete(urlFile); } catch { /* best-effort */ }
     // Turn the hotspot off again if this app turned it on.
     try { app.Services.GetRequiredService<IHotspotService>().StopIfStartedByAppAsync().Wait(TimeSpan.FromSeconds(10)); }
@@ -318,6 +325,7 @@ app.MapPost("/api/mock/shipping-labels/print", async (ShippingLabelsPrintRequest
 .ProducesValidationProblem(StatusCodes.Status400BadRequest);
 
 app.Run();
+tray?.Dispose();
 
 static int FindFreePort(int start, IPAddress address)
 {

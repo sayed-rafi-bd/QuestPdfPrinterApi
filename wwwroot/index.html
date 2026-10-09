@@ -6,28 +6,317 @@
   <title>Shipping Labels</title>
   <link rel="icon" href="/favicon.ico">
   <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-slate-100 text-slate-800 min-h-screen">
-  <div class="max-w-5xl mx-auto p-4 sm:p-6 space-y-6">
-    <!-- Where to open this app from -->
-    <div id="addressBanner" class="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm">
-      <div class="font-semibold text-indigo-900">Open from a phone or tablet</div>
-      <div id="addressBody" class="mt-1 text-indigo-800">Checking address…</div>
-    </div>
+  <style>[x-cloak] { display: none !important; }</style>
+  <script>
+    // ---------- helpers ----------
+    const fmtMs = (ms) => ms >= 1000 ? (ms / 1000).toFixed(2) + ' s' : Math.round(ms) + ' ms';
 
-    <!-- Phone hotspot -->
-    <section class="bg-white rounded-xl shadow p-5 space-y-3">
+    // fetch + timing: total = browser round trip until the response body is fully read;
+    // server = the app's own processing time from the Server-Timing header (when present).
+    async function timedFetch(url, options, as = 'json') {
+      const t0 = performance.now();
+      const res = await fetch(url, options);
+      let body;
+      if (as === 'blob') body = res.ok ? await res.blob() : await res.json().catch(() => ({}));
+      else body = await res.json().catch(() => ({}));
+      const total = performance.now() - t0;
+      const m = /dur=([\d.]+)/.exec(res.headers.get('Server-Timing') || '');
+      const server = m ? parseFloat(m[1]) : null;
+      return { res, body, total, server };
+    }
+
+    const timeText = (r) => ' · ' + fmtMs(r.total) + (r.server !== null ? ' (server ' + fmtMs(r.server) + ')' : '');
+    const msgOf = (body, res) => (body && (body.message || body.error || body.title)) || res.statusText || ('HTTP ' + res.status);
+    const statusClass = (st) => 'text-sm ' + (st.ok === null ? 'text-slate-500' : st.ok ? 'text-emerald-700' : 'text-red-600');
+    const newStatus = () => ({ text: '', ok: null });
+
+    // ---------- Alpine app ----------
+    document.addEventListener('alpine:init', () => {
+      Alpine.data('app', () => ({
+        statusClass,
+
+        // --- phone / QR banner ---
+        info: null,            // /api/server-info
+        infoError: null,
+        hotspot: null,         // /api/hotspot
+        hotspotOverride: null, // { text, err } - transient/error message that replaces the derived one
+        hotspotNote: '',
+        hotspotBusy: false,
+        tab: 'wifi',           // 'wifi' | 'url'
+        timer: null,
+
+        // --- PDF ---
+        pdfCount: 1,
+        pdfStatus: newStatus(),
+        pdfSrc: null,
+
+        // --- Companion ---
+        companionPort: 12500,
+        companionStatus: newStatus(),
+
+        // --- Print ---
+        printers: [],
+        printersLoading: false,
+        printersError: false,
+        printer: '',
+        printerHint: '',
+        printCount: 1,
+        orientation: 'Landscape',
+        paperSelect: '',
+        paperCustom: '',
+        dpi: '',
+        printStatus: newStatus(),
+
+        init() {
+          this.loadServerInfo();
+          this.refreshHotspot();
+          this.loadPrinters();
+        },
+
+        // ================= Banner: QR codes =================
+        get hotspotOn() { return this.hotspot?.state === 'on'; },
+
+        // What each tab encodes. The URL tab uses the hotspot address when the hotspot is on,
+        // otherwise the PC's first LAN address.
+        get wifiPayload() { return this.hotspotOn ? this.hotspot.wifiQrPayload : null; },
+        get urlPayload() {
+          if (this.hotspotOn && this.hotspot.appUrl) return this.hotspot.appUrl;
+          return this.info?.networkUrls?.[0] ?? null;
+        },
+
+        // The Wi-Fi tab is unavailable until the hotspot is on, so fall back to the URL tab.
+        get activeTab() { return this.tab === 'wifi' && !this.hotspotOn ? 'url' : this.tab; },
+        get qrPayload() { return this.activeTab === 'wifi' ? this.wifiPayload : this.urlPayload; },
+        get qrSrc() { return this.qrPayload ? '/api/qr?text=' + encodeURIComponent(this.qrPayload) : ''; },
+
+        // Shown instead of the QR when there is nothing to encode.
+        get qrNotice() {
+          if (this.qrPayload) return null;
+          if (this.infoError) return 'Could not read the server address: ' + this.infoError;
+          if (!this.info) return 'Checking address…';
+          if (!this.info.networkAccessEnabled)
+            return 'Network access is off - this app can only be opened on this PC. Reinstall and tick “Allow phones/tablets on my network”, or start it with --network.';
+          if (!this.info.networkUrls.length)
+            return 'Network access is on, but no network connection was found. Connect this PC to Wi-Fi or Ethernet.';
+          return null;
+        },
+
+        get hotspotLine() {
+          if (this.hotspotOverride) return this.hotspotOverride;
+          const s = this.hotspot, note = this.hotspotNote ? ' ' + this.hotspotNote : '';
+          if (!s) return { text: 'Checking hotspot…', err: false };
+          if (!s.supported) return { text: s.error || 'Hotspot control needs Windows 10 or later.', err: false };
+          if (s.state !== 'on') {
+            if (s.error && s.state === 'unknown') return { text: s.error, err: true };
+            if (s.state === 'starting') return { text: 'Starting the hotspot…' + note, err: false };
+            if (!s.networkAccessEnabled)
+              return { text: 'Network access is off, so a phone could not open this app. Reinstall with “Allow phones/tablets on my network” ticked, or start the app with --network.', err: false };
+            return { text: 'Start the hotspot and scan the Wi-Fi QR code to join it, or use the App URL tab if the phone is already on this network.' + note, err: false };
+          }
+          return {
+            text: (s.clientCount > 0 ? 'Hotspot is on - ' + s.clientCount + ' device(s) joined.' : 'Hotspot is on - waiting for a phone to join…') + note,
+            err: false
+          };
+        },
+
+        get showStart() { return !!this.hotspot?.supported && this.hotspot.state !== 'on' && this.hotspot.state !== 'starting'; },
+        get showStop()  { return !!this.hotspot?.supported && this.hotspotOn; },
+
+        async loadServerInfo() {
+          try {
+            const r = await timedFetch('/api/server-info');
+            if (!r.res.ok) throw new Error(msgOf(r.body, r.res));
+            this.info = r.body;
+          } catch (err) { this.infoError = err.message; }
+        },
+
+        applyHotspot(s) {
+          const prev = this.hotspot;
+          // Flow: hotspot turns on -> Wi-Fi QR; first device joins -> switch to the URL QR.
+          if (s.state === 'on' && prev?.state !== 'on') this.tab = 'wifi';
+          if (s.state === 'on' && (prev?.clientCount ?? 0) === 0 && s.clientCount > 0) this.tab = 'url';
+          this.hotspot = s;
+          this.hotspotOverride = null;
+          const active = s.state === 'on' || s.state === 'starting';
+          if (active && !this.timer) this.timer = setInterval(() => this.refreshHotspot(), 3000);
+          if (!active && this.timer) { clearInterval(this.timer); this.timer = null; }
+        },
+
+        async refreshHotspot() {
+          try {
+            const r = await fetch('/api/hotspot');
+            const s = await r.json();
+            if (!r.ok) throw new Error(s.error || r.statusText);
+            this.applyHotspot(s);
+          } catch (err) {
+            this.hotspotOverride = { text: 'Could not read hotspot status: ' + err.message, err: true };
+          }
+        },
+
+        async hotspotAction(kind) {
+          this.hotspotOverride = { text: (kind === 'start' ? 'Starting' : 'Stopping') + ' the hotspot… (this can take a few seconds)', err: false };
+          this.hotspotBusy = true;
+          try {
+            const r = await timedFetch('/api/hotspot/' + kind, { method: 'POST' });
+            if (!r.res.ok) {
+              this.hotspotOverride = { text: msgOf(r.body, r.res) + timeText(r), err: true };
+              return;
+            }
+            this.hotspotNote = '· ' + (kind === 'start' ? 'started' : 'stopped') + timeText(r).replace(' · ', ' in ');
+            this.applyHotspot(r.body);
+          } catch (err) {
+            this.hotspotOverride = { text: 'Request failed: ' + err.message, err: true };
+          } finally { this.hotspotBusy = false; }
+        },
+
+        // ================= PDF =================
+        async fetchPdf() {
+          const st = this.pdfStatus;
+          st.text = 'Generating…'; st.ok = null;
+          try {
+            const url = '/api/mock/shipping-labels/pdf?count=' + encodeURIComponent(this.pdfCount || 1);
+            const r = await timedFetch(url, undefined, 'blob');
+            if (!r.res.ok) { st.text = msgOf(r.body, r.res) + timeText(r); st.ok = false; return null; }
+            st.text = 'PDF ready (' + Math.round(r.body.size / 1024) + ' KB)' + timeText(r); st.ok = true;
+            return r.body;
+          } catch (err) { st.text = 'Request failed: ' + err.message; st.ok = false; return null; }
+        },
+
+        async previewPdf() {
+          const blob = await this.fetchPdf();
+          if (!blob) return;
+          if (this.pdfSrc) URL.revokeObjectURL(this.pdfSrc);
+          this.pdfSrc = URL.createObjectURL(blob);
+        },
+
+        async downloadPdf() {
+          const blob = await this.fetchPdf();
+          if (!blob) return;
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'shipping-labels-' + (this.pdfCount || 1) + '.pdf';
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        },
+
+        // ================= Companion =================
+        async sendToCompanion() {
+          const st = this.companionStatus;
+          st.text = 'Sending…'; st.ok = null;
+          try {
+            const port = parseInt(this.companionPort, 10);
+            const r = await timedFetch('/api/mock/shipping-labels/preview', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ companionPort: Number.isFinite(port) ? port : null })
+            });
+            st.text = msgOf(r.body, r.res) + timeText(r); st.ok = r.res.ok;
+          } catch (err) { st.text = 'Request failed: ' + err.message; st.ok = false; }
+        },
+
+        // ================= Printers / Print =================
+        get printerPlaceholder() {
+          return this.printersLoading ? 'Loading…' : this.printersError ? 'Could not load printers' : 'No printers found';
+        },
+
+        async loadPrinters() {
+          this.printersLoading = true; this.printersError = false;
+          this.printers = []; this.printer = ''; this.printerHint = '';
+          try {
+            const r = await timedFetch('/api/printers');
+            if (!r.res.ok) throw new Error(msgOf(r.body, r.res));
+            const list = r.body;
+            this.printerHint = 'Loaded ' + list.length + ' printer(s)' + timeText(r);
+            this.printers = list;
+            // Wait for the <option>s to render before selecting one.
+            await this.$nextTick();
+            const saved = localStorage.getItem('printer');
+            this.printer = saved && list.some(p => p.name === saved) ? saved : (list[0]?.name ?? '');
+          } catch (err) {
+            this.printersError = true;
+            this.printerHint = err.message + ' (listing printers needs Windows + PowerShell)';
+          } finally { this.printersLoading = false; }
+        },
+
+        async print() {
+          const st = this.printStatus;
+          if (!this.printer) { st.text = 'Select a printer first.'; st.ok = false; return; }
+          const pageSize = this.paperSelect === '__custom' ? this.paperCustom.trim() : this.paperSelect;
+          st.text = 'Sending…'; st.ok = null;
+          try {
+            const r = await timedFetch('/api/mock/shipping-labels/print', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                printerName: this.printer,
+                count: parseInt(this.printCount, 10) || 1,
+                pageSize: pageSize || null,
+                orientation: this.orientation,
+                dpi: this.dpi ? parseInt(this.dpi, 10) : null
+              })
+            });
+            st.text = msgOf(r.body, r.res) + timeText(r); st.ok = r.res.ok;
+          } catch (err) { st.text = 'Request failed: ' + err.message; st.ok = false; }
+        }
+      }));
+    });
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+</head>
+<body class="bg-slate-100 text-slate-800 min-h-screen" x-data="app">
+  <div class="max-w-5xl mx-auto p-4 sm:p-6 space-y-6">
+
+    <!-- Open from a phone or tablet: QR codes (Wi-Fi / App URL) -->
+    <section class="rounded-xl border border-indigo-200 bg-indigo-50 p-5 space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-2">
-        <h2 class="text-lg font-semibold">Phone hotspot</h2>
+        <h2 class="text-lg font-semibold text-indigo-900">Open from a phone or tablet</h2>
         <div class="flex gap-2">
-          <button id="hotspotStartBtn" class="rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 font-medium">Start hotspot</button>
-          <button id="hotspotStopBtn" class="hidden rounded-lg bg-slate-200 hover:bg-slate-300 px-4 py-2 font-medium">Stop hotspot</button>
+          <button x-cloak x-show="showStart" @click="hotspotAction('start')"
+                  :disabled="hotspotBusy || !hotspot?.networkAccessEnabled"
+                  class="rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 font-medium">Start hotspot</button>
+          <button x-cloak x-show="showStop" @click="hotspotAction('stop')" :disabled="hotspotBusy"
+                  class="rounded-lg bg-white hover:bg-slate-100 border border-indigo-200 disabled:opacity-50 px-4 py-2 font-medium">Stop hotspot</button>
         </div>
       </div>
-      <p id="hotspotMsg" class="text-sm text-slate-600">Checking hotspot…</p>
-      <div id="hotspotQrWrap" class="hidden flex flex-col sm:flex-row items-center gap-5">
-        <img id="hotspotQr" width="200" height="200" class="w-48 h-48 rounded-lg border border-slate-300 bg-white" alt="QR code">
-        <div id="hotspotQrText" class="text-sm space-y-1 text-center sm:text-left"></div>
+
+      <p class="text-sm" :class="hotspotLine.err ? 'text-red-600' : 'text-indigo-800'" x-text="hotspotLine.text"></p>
+
+      <!-- Tabs -->
+      <div role="tablist" class="inline-flex rounded-lg bg-white border border-indigo-200 p-1 text-sm font-medium">
+        <button type="button" role="tab" :aria-selected="activeTab === 'wifi'" @click="tab = 'wifi'" :disabled="!hotspotOn"
+                :title="hotspotOn ? '' : 'Start the hotspot to get the Wi-Fi QR code'"
+                class="rounded-md px-4 py-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                :class="activeTab === 'wifi' ? 'bg-indigo-600 text-white' : 'text-indigo-800 hover:bg-indigo-50'">Wi-Fi</button>
+        <button type="button" role="tab" :aria-selected="activeTab === 'url'" @click="tab = 'url'"
+                class="rounded-md px-4 py-1.5 transition"
+                :class="activeTab === 'url' ? 'bg-indigo-600 text-white' : 'text-indigo-800 hover:bg-indigo-50'">App URL</button>
+      </div>
+
+      <!-- QR panel -->
+      <p x-cloak x-show="qrNotice" class="text-sm text-indigo-800" x-text="qrNotice"></p>
+
+      <div x-cloak x-show="qrSrc" class="flex flex-col sm:flex-row items-center gap-5">
+        <img :src="qrSrc || null" width="200" height="200" alt="QR code"
+             class="w-48 h-48 rounded-lg border border-slate-300 bg-white">
+
+        <div class="text-sm space-y-1 text-center sm:text-left text-indigo-900">
+          <template x-if="activeTab === 'wifi'">
+            <div class="space-y-1">
+              <div class="font-semibold">Scan to join the Wi-Fi</div>
+              <div>Network: <b x-text="hotspot.ssid"></b></div>
+              <div>Password: <b x-text="hotspot.passphrase"></b></div>
+              <div class="text-xs text-indigo-700 pt-1">The phone may say “no internet” - stay connected, then switch to the App URL tab.</div>
+            </div>
+          </template>
+          <template x-if="activeTab === 'url'">
+            <div class="space-y-1">
+              <div class="font-semibold">Scan to open this app</div>
+              <div class="text-xs text-indigo-700"
+                   x-text="hotspotOn ? 'The phone must be connected to this PC’s hotspot.' : 'The phone must be on the same Wi-Fi/network as this PC.'"></div>
+              <div class="text-xs text-indigo-700 pt-1">Local network only (not the internet). If the phone cannot connect, allow this app through Windows Firewall on private networks. There is no login - anyone on this network can print.</div>
+            </div>
+          </template>
+        </div>
       </div>
     </section>
 
@@ -42,13 +331,13 @@
       <div class="flex flex-wrap items-end gap-4">
         <label class="block">
           <span class="block text-sm font-medium mb-1">Labels (pages)</span>
-          <input id="pdfCount" type="number" min="1" value="1" class="w-28 rounded-lg border border-slate-300 px-3 py-2">
+          <input type="number" min="1" x-model="pdfCount" class="w-28 rounded-lg border border-slate-300 px-3 py-2">
         </label>
-        <button id="pdfPreviewBtn" class="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 font-medium">Show here</button>
-        <button id="pdfDownloadBtn" class="rounded-lg bg-slate-200 hover:bg-slate-300 px-4 py-2 font-medium">Download</button>
+        <button @click="previewPdf()" class="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 font-medium">Show here</button>
+        <button @click="downloadPdf()" class="rounded-lg bg-slate-200 hover:bg-slate-300 px-4 py-2 font-medium">Download</button>
       </div>
-      <p id="pdfStatus" class="text-sm"></p>
-      <iframe id="pdfFrame" class="hidden w-full h-[480px] rounded-lg border border-slate-300 bg-slate-50"></iframe>
+      <p :class="statusClass(pdfStatus)" x-text="pdfStatus.text"></p>
+      <iframe x-cloak x-show="pdfSrc" :src="pdfSrc" class="w-full h-[480px] rounded-lg border border-slate-300 bg-slate-50"></iframe>
     </section>
 
     <!-- Companion preview -->
@@ -58,11 +347,11 @@
       <div class="flex flex-wrap items-end gap-4">
         <label class="block">
           <span class="block text-sm font-medium mb-1">Companion port</span>
-          <input id="companionPort" type="number" min="1" max="65535" value="12500" class="w-32 rounded-lg border border-slate-300 px-3 py-2">
+          <input type="number" min="1" max="65535" x-model="companionPort" class="w-32 rounded-lg border border-slate-300 px-3 py-2">
         </label>
-        <button id="companionBtn" class="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 font-medium">Send to Companion</button>
+        <button @click="sendToCompanion()" class="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 font-medium">Send to Companion</button>
       </div>
-      <p id="companionStatus" class="text-sm"></p>
+      <p :class="statusClass(companionStatus)" x-text="companionStatus.text"></p>
     </section>
 
     <!-- Print -->
@@ -72,28 +361,34 @@
         <label class="block sm:col-span-2">
           <span class="block text-sm font-medium mb-1">Printer</span>
           <div class="flex gap-2">
-            <select id="printer" class="flex-1 rounded-lg border border-slate-300 px-3 py-2 bg-white"></select>
-            <button id="refreshPrinters" type="button" class="rounded-lg bg-slate-200 hover:bg-slate-300 px-3 py-2 text-sm font-medium">Reload</button>
+            <select x-model="printer" @change="localStorage.setItem('printer', printer)"
+                    class="flex-1 rounded-lg border border-slate-300 px-3 py-2 bg-white">
+              <template x-if="!printers.length"><option value="" x-text="printerPlaceholder"></option></template>
+              <template x-for="p in printers" :key="p.name">
+                <option :value="p.name" x-text="p.name + (p.isBluetooth ? '  (Bluetooth)' : '')"></option>
+              </template>
+            </select>
+            <button type="button" @click="loadPrinters()" class="rounded-lg bg-slate-200 hover:bg-slate-300 px-3 py-2 text-sm font-medium">Reload</button>
           </div>
-          <span id="printerHint" class="block text-xs text-slate-500 mt-1"></span>
+          <span class="block text-xs text-slate-500 mt-1" x-text="printerHint"></span>
         </label>
 
         <label class="block">
           <span class="block text-sm font-medium mb-1">Labels (pages)</span>
-          <input id="printCount" type="number" min="1" value="1" class="w-full rounded-lg border border-slate-300 px-3 py-2">
+          <input type="number" min="1" x-model="printCount" class="w-full rounded-lg border border-slate-300 px-3 py-2">
         </label>
 
         <label class="block">
           <span class="block text-sm font-medium mb-1">Orientation</span>
-          <select id="orientation" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white">
-            <option value="Landscape" selected>Landscape</option>
+          <select x-model="orientation" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white">
+            <option value="Landscape">Landscape</option>
             <option value="Portrait">Portrait</option>
           </select>
         </label>
 
         <label class="block">
           <span class="block text-sm font-medium mb-1">Paper size</span>
-          <select id="paperSelect" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white">
+          <select x-model="paperSelect" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white">
             <option value="">Printer's current paper</option>
             <option value="114mm x 81mm">114mm x 81mm (template)</option>
             <option value="76mm x 130mm">76mm x 130mm</option>
@@ -102,12 +397,13 @@
             <option value="A6">A6</option>
             <option value="__custom">Custom…</option>
           </select>
-          <input id="paperCustom" type="text" placeholder="e.g. 100mm x 150mm" class="hidden mt-2 w-full rounded-lg border border-slate-300 px-3 py-2">
+          <input x-cloak x-show="paperSelect === '__custom'" type="text" x-model="paperCustom" placeholder="e.g. 100mm x 150mm"
+                 class="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2">
         </label>
 
         <label class="block">
           <span class="block text-sm font-medium mb-1">DPI</span>
-          <select id="dpi" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white">
+          <select x-model="dpi" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white">
             <option value="">Printer default</option>
             <option value="203">203</option>
             <option value="300">300</option>
@@ -116,343 +412,11 @@
         </label>
       </div>
       <div class="flex items-center gap-4">
-        <button id="printBtn" class="rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 font-medium">Print</button>
-        <p id="printStatus" class="text-sm"></p>
+        <button @click="print()" class="rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 font-medium">Print</button>
+        <p :class="statusClass(printStatus)" x-text="printStatus.text"></p>
       </div>
-      <p class="text-xs text-slate-500">Time shown for Print is until the job is queued, not until the printer finishes. Always prints with “Fit to paper”: the page is scaled to fit the selected paper. Paper size and orientation only affect the print job, not the PDF.</p>  
+      <p class="text-xs text-slate-500">Time shown for Print is until the job is queued, not until the printer finishes. Always prints with “Fit to paper”: the page is scaled to fit the selected paper. Paper size and orientation only affect the print job, not the PDF.</p>
     </section>
   </div>
-
-<script>
-  const $ = (id) => document.getElementById(id);
-
-  function setStatus(el, text, ok) {
-    el.textContent = text;
-    el.className = 'text-sm ' + (ok ? 'text-emerald-700' : 'text-red-600');
-  }
-
-  function fmtMs(ms) {
-    return ms >= 1000 ? (ms / 1000).toFixed(2) + ' s' : Math.round(ms) + ' ms';
-  }
-
-  // fetch + timing: total = browser round trip until the response body is fully read;
-  // server = the app's own processing time from the Server-Timing header (when present).
-  async function timedFetch(url, options, as = 'json') {
-    const t0 = performance.now();
-    const res = await fetch(url, options);
-    let body;
-    if (as === 'blob') body = res.ok ? await res.blob() : await res.json().catch(() => ({}));
-    else body = await res.json().catch(() => ({}));
-    const total = performance.now() - t0;
-    const m = /dur=([\d.]+)/.exec(res.headers.get('Server-Timing') || '');
-    const server = m ? parseFloat(m[1]) : null;
-    return { res, body, total, server };
-  }
-
-  function timeText(r) {
-    return ' · ' + fmtMs(r.total) + (r.server !== null ? ' (server ' + fmtMs(r.server) + ')' : '');
-  }
-
-  function msgOf(body, res) {
-    return (body && (body.message || body.error || body.title)) || res.statusText || ('HTTP ' + res.status);
-  }
-
-
-  function pdfUrl() {
-    return '/api/mock/shipping-labels/pdf?count=' + encodeURIComponent($('pdfCount').value || 1);
-  }
-
-  async function fetchPdf() {
-    const st = $('pdfStatus');
-    st.textContent = 'Generating…'; st.className = 'text-sm text-slate-500';
-    try {
-      const r = await timedFetch(pdfUrl(), undefined, 'blob');
-      if (!r.res.ok) { setStatus(st, msgOf(r.body, r.res) + timeText(r), false); return null; }
-      setStatus(st, 'PDF ready (' + Math.round(r.body.size / 1024) + ' KB)' + timeText(r), true);
-      return r.body;
-    } catch (err) { setStatus(st, 'Request failed: ' + err.message, false); return null; }
-  }
-
-  let currentPdfUrl = null;
-  $('pdfPreviewBtn').addEventListener('click', async () => {
-    const blob = await fetchPdf();
-    if (!blob) return;
-    if (currentPdfUrl) URL.revokeObjectURL(currentPdfUrl);
-    currentPdfUrl = URL.createObjectURL(blob);
-    $('pdfFrame').classList.remove('hidden');
-    $('pdfFrame').src = currentPdfUrl;
-  });
-  $('pdfDownloadBtn').addEventListener('click', async () => {
-    const blob = await fetchPdf();
-    if (!blob) return;
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'shipping-labels-' + ($('pdfCount').value || 1) + '.pdf';
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  });
-
-  // ---- Companion ----
-  $('companionBtn').addEventListener('click', async () => {
-    const st = $('companionStatus');
-    st.textContent = 'Sending…'; st.className = 'text-sm text-slate-500';
-    try {
-      const port = parseInt($('companionPort').value, 10);
-      const r = await timedFetch('/api/mock/shipping-labels/preview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ companionPort: Number.isFinite(port) ? port : null })
-      });
-      setStatus(st, msgOf(r.body, r.res) + timeText(r), r.res.ok);
-    } catch (err) { setStatus(st, 'Request failed: ' + err.message, false); }
-  });
-
-  // ---- Printers ----
-  async function loadPrinters() {
-    const sel = $('printer'), hint = $('printerHint');
-    sel.innerHTML = '<option value="">Loading…</option>';
-    hint.textContent = '';
-    try {
-      const r = await timedFetch('/api/printers');
-      if (!r.res.ok) throw new Error(msgOf(r.body, r.res));
-      const printers = r.body;
-      hint.textContent = 'Loaded ' + printers.length + ' printer(s)' + timeText(r);
-      sel.innerHTML = '';
-      if (!printers.length) {
-        sel.innerHTML = '<option value="">No printers found</option>';
-        return;
-      }
-      for (const p of printers) {
-        const o = document.createElement('option');
-        o.value = p.name;
-        o.textContent = p.name + (p.isBluetooth ? '  (Bluetooth)' : '');
-        sel.appendChild(o);
-      }
-      const saved = localStorage.getItem('printer');
-      if (saved && printers.some(p => p.name === saved)) sel.value = saved;
-    } catch (err) {
-      sel.innerHTML = '<option value="">Could not load printers</option>';
-      hint.textContent = err.message + ' (listing printers needs Windows + PowerShell)';
-    }
-  }
-  $('printer').addEventListener('change', () => localStorage.setItem('printer', $('printer').value));
-  $('refreshPrinters').addEventListener('click', loadPrinters);
-
-  $('paperSelect').addEventListener('change', () => {
-    $('paperCustom').classList.toggle('hidden', $('paperSelect').value !== '__custom');
-  });
-
-  // ---- Print ----
-  $('printBtn').addEventListener('click', async () => {
-    const st = $('printStatus');
-    const printerName = $('printer').value;
-    if (!printerName) { setStatus(st, 'Select a printer first.', false); return; }
-
-    let pageSize = $('paperSelect').value;
-    if (pageSize === '__custom') pageSize = $('paperCustom').value.trim();
-    const dpi = $('dpi').value;
-
-    st.textContent = 'Sending…'; st.className = 'text-sm text-slate-500';
-    try {
-      const r = await timedFetch('/api/mock/shipping-labels/print', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          printerName,
-          count: parseInt($('printCount').value, 10) || 1,
-          pageSize: pageSize || null,
-          orientation: $('orientation').value,
-          dpi: dpi ? parseInt(dpi, 10) : null
-        })
-      });
-      setStatus(st, msgOf(r.body, r.res) + timeText(r), r.res.ok);
-    } catch (err) { setStatus(st, 'Request failed: ' + err.message, false); }
-  });
-
-  // ---- Address banner ----
-  function copyText(text, btn) {
-    const done = () => { const t = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => btn.textContent = t, 1200); };
-    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, () => {});
-    else { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); done(); } catch {} ta.remove(); }
-  }
-
-  async function loadServerInfo() {
-    const body = $('addressBody');
-    body.innerHTML = '';
-    try {
-      const r = await timedFetch('/api/server-info');
-      if (!r.res.ok) throw new Error(msgOf(r.body, r.res));
-      const info = r.body;
-
-      if (!info.networkAccessEnabled) {
-        body.textContent = 'Network access is off - this app can only be opened on this PC (' + info.localUrl + '). Reinstall and tick “Allow phones/tablets on my network”, or start it with --network.';
-        return;
-      }
-      if (!info.networkUrls.length) {
-        body.textContent = 'Network access is on, but no network connection was found. Connect this PC to Wi-Fi or Ethernet.';
-        return;
-      }
-
-      const intro = document.createElement('div');
-      intro.textContent = 'On a phone/tablet connected to the same Wi-Fi/network, open:';
-      body.appendChild(intro);
-      for (const url of info.networkUrls) {
-        const row = document.createElement('div');
-        row.className = 'mt-1 flex flex-wrap items-center gap-2';
-        const code = document.createElement('code');
-        code.className = 'rounded bg-white px-2 py-1 font-mono text-indigo-900 border border-indigo-200 select-all';
-        code.textContent = url;
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'rounded bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 text-xs font-medium';
-        btn.textContent = 'Copy';
-        btn.addEventListener('click', () => copyText(url, btn));
-        row.append(code, btn);
-        body.appendChild(row);
-      }
-      const note = document.createElement('div');
-      note.className = 'mt-2 text-xs text-indigo-700';
-      note.textContent = 'Local network only (not the internet). If the phone cannot connect, allow this app through Windows Firewall on private networks. There is no login - anyone on this network can print.';
-      body.appendChild(note);
-    } catch (err) {
-      body.textContent = 'Could not read the server address: ' + err.message;
-    }
-  }
-
-  // ---- Phone hotspot ----
-  // Flow: Start -> Wi-Fi QR (phone joins) -> once a device has joined, app-URL QR.
-  let hotspotTimer = null;
-  let forceWifiQr = false;
-  let hotspotNote = '';
-  let lastHotspot = null;
-
-  function setQr(text) {
-    const img = $('hotspotQr');
-    const src = '/api/qr?text=' + encodeURIComponent(text);
-    if (img.getAttribute('src') !== src) img.setAttribute('src', src);
-  }
-
-  function renderHotspot(s) {
-    lastHotspot = s;
-    const msg = $('hotspotMsg'), startBtn = $('hotspotStartBtn'), stopBtn = $('hotspotStopBtn');
-    const wrap = $('hotspotQrWrap'), qrText = $('hotspotQrText');
-    const note = hotspotNote ? ' ' + hotspotNote : '';
-    msg.className = 'text-sm text-slate-600';
-    qrText.innerHTML = '';
-    wrap.classList.add('hidden');
-
-    if (!s.supported) {
-      startBtn.classList.add('hidden'); stopBtn.classList.add('hidden');
-      msg.textContent = s.error || 'Hotspot control needs Windows 10 or later.';
-      return;
-    }
-    startBtn.classList.remove('hidden');
-
-    const on = s.state === 'on';
-    startBtn.classList.toggle('hidden', on || s.state === 'starting');
-    stopBtn.classList.toggle('hidden', !on);
-    startBtn.disabled = !s.networkAccessEnabled;
-
-    if (!on) {
-      if (s.error && s.state === 'unknown') {
-        msg.textContent = s.error;
-        msg.className = 'text-sm text-red-600';
-        return;
-      }
-      if (s.state === 'starting') { msg.textContent = 'Starting the hotspot…' + note; return; }
-      msg.textContent = s.networkAccessEnabled
-        ? 'Start the hotspot, then scan the QR code with your phone camera to join it.' + note
-        : 'Network access is off, so a phone could not open this app. Reinstall with “Allow phones/tablets on my network” ticked, or start the app with --network.';
-      return;
-    }
-
-    wrap.classList.remove('hidden');
-    const joined = s.clientCount > 0;
-    const showUrl = joined && !forceWifiQr;
-
-    if (showUrl) {
-      setQr(s.appUrl);
-      msg.textContent = 'Hotspot is on - ' + s.clientCount + ' device(s) joined.' + note;
-      const t = document.createElement('div');
-      t.innerHTML = '<div class="font-semibold">Step 2 - scan to open this app on the phone</div>';
-      const code = document.createElement('code');
-      code.className = 'inline-block rounded bg-slate-100 border border-slate-300 px-2 py-1 font-mono select-all';
-      code.textContent = s.appUrl;
-      const again = document.createElement('button');
-      again.type = 'button';
-      again.className = 'block text-xs text-indigo-700 underline mt-2';
-      again.textContent = 'Show the Wi-Fi QR code again';
-      again.addEventListener('click', () => { forceWifiQr = true; renderHotspot(lastHotspot); });
-      qrText.append(t, code, again);
-    } else {
-      setQr(s.wifiQrPayload);
-      msg.textContent = (joined ? 'Hotspot is on - ' + s.clientCount + ' device(s) joined.' : 'Hotspot is on - waiting for a phone to join…') + note;
-      const t = document.createElement('div');
-      t.innerHTML = '<div class="font-semibold">Step 1 - scan to join the Wi-Fi</div>' +
-        '<div>Network: <b></b></div><div>Password: <b></b></div>' +
-        '<div class="text-xs text-slate-500 pt-1">The phone may say “no internet” - stay connected. The app URL QR code appears here once the phone has joined.</div>';
-      const bs = t.querySelectorAll('b');
-      bs[0].textContent = s.ssid; bs[1].textContent = s.passphrase;
-      qrText.append(t);
-      if (joined) {
-        const next = document.createElement('button');
-        next.type = 'button';
-        next.className = 'block text-xs text-indigo-700 underline mt-2';
-        next.textContent = 'Show the app URL QR code';
-        next.addEventListener('click', () => { forceWifiQr = false; renderHotspot(lastHotspot); });
-        qrText.append(next);
-      }
-    }
-  }
-
-  function scheduleHotspotPolling(s) {
-    const active = s && (s.state === 'on' || s.state === 'starting');
-    if (active && !hotspotTimer) hotspotTimer = setInterval(refreshHotspot, 3000);
-    if (!active && hotspotTimer) { clearInterval(hotspotTimer); hotspotTimer = null; }
-  }
-
-  async function refreshHotspot() {
-    try {
-      const r = await fetch('/api/hotspot');
-      const s = await r.json();
-      if (!r.ok) throw new Error(s.error || r.statusText);
-      renderHotspot(s);
-      scheduleHotspotPolling(s);
-    } catch (err) {
-      $('hotspotMsg').textContent = 'Could not read hotspot status: ' + err.message;
-      $('hotspotMsg').className = 'text-sm text-red-600';
-    }
-  }
-
-  async function hotspotAction(kind) {
-    const msg = $('hotspotMsg');
-    msg.textContent = (kind === 'start' ? 'Starting' : 'Stopping') + ' the hotspot… (this can take a few seconds)';
-    msg.className = 'text-sm text-slate-500';
-    $('hotspotStartBtn').disabled = true;
-    try {
-      const r = await timedFetch('/api/hotspot/' + kind, { method: 'POST' });
-      if (!r.res.ok) {
-        msg.textContent = msgOf(r.body, r.res) + timeText(r);
-        msg.className = 'text-sm text-red-600';
-        $('hotspotStartBtn').disabled = false;
-        return;
-      }
-      forceWifiQr = false;
-      hotspotNote = '· ' + (kind === 'start' ? 'started' : 'stopped') + timeText(r).replace(' · ', ' in ');
-      renderHotspot(r.body);
-      scheduleHotspotPolling(r.body);
-    } catch (err) {
-      msg.textContent = 'Request failed: ' + err.message;
-      msg.className = 'text-sm text-red-600';
-      $('hotspotStartBtn').disabled = false;
-    }
-  }
-  $('hotspotStartBtn').addEventListener('click', () => hotspotAction('start'));
-  $('hotspotStopBtn').addEventListener('click', () => hotspotAction('stop'));
-
-  loadServerInfo();
-  refreshHotspot();
-  loadPrinters();
-</script>
 </body>
 </html>
