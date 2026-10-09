@@ -8,8 +8,8 @@ QuestPDF.Settings.License = LicenseType.Community;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// So PageOrientation/PrintFitMode are accepted/returned as "Portrait"/"Contain" etc. in
-// JSON request/response bodies (and shown that way in Swagger) instead of raw integers.
+// So PageOrientation is accepted/returned as "Portrait"/"Landscape" in
+// JSON request/response bodies instead of raw integers.
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
@@ -17,18 +17,6 @@ builder.Services.AddSingleton<IMockShippingLabelsSource, MockShippingLabelsSourc
 builder.Services.AddSingleton<IShippingLabelPdfService, ShippingLabelPdfService>();
 builder.Services.AddSingleton<IPrinterService, PrinterService>();
 builder.Services.AddSingleton<IDocumentDeliveryService, DocumentDeliveryService>();
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(options =>
-{
-    options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
-    {
-        Title = "QuestPDF Printer API",
-        Version = "v1",
-        Description = "Builds Japanese carrier shipping labels (送り状) with QuestPDF, from mock data " +
-                      "only. Download, preview, and print are all backed by their respective mock " +
-                      "sources - preview and print each have their own endpoint."
-    });
-});
 
 var app = builder.Build();
 
@@ -57,17 +45,21 @@ QuestPDF.Fluent.Document.Create(c => c.Page(p => p.Content().Text("warmup"))).Ge
 app.Use(async (context, next) =>
 {
     var sw = System.Diagnostics.Stopwatch.StartNew();
+    // Server-Timing lets the UI show server time separately from the browser round trip.
+    // Headers must be set before the response starts, hence OnStarting.
+    context.Response.OnStarting(() =>
+    {
+        context.Response.Headers["Server-Timing"] = $"app;dur={sw.ElapsedMilliseconds}";
+        return Task.CompletedTask;
+    });
     await next();
     sw.Stop();
     Console.WriteLine($"[TIMING] {context.Request.Method} {context.Request.Path}{context.Request.QueryString}: {sw.ElapsedMilliseconds} ms (status {context.Response.StatusCode})");
 });
 
-app.UseSwagger();
-app.UseSwaggerUI(options =>
-{
-    options.SwaggerEndpoint("/swagger/v1/swagger.json", "QuestPDF Printer API v1");
-    options.RoutePrefix = "swagger";
-});
+// Serves wwwroot/index.html (the UI) at "/".
+app.UseDefaultFiles();
+app.UseStaticFiles();
 
 app.MapGet("/api/printers", async (IPrinterService printers, CancellationToken ct) =>
 {
@@ -82,87 +74,62 @@ app.MapGet("/api/printers", async (IPrinterService printers, CancellationToken c
                   "queues apart; see PrinterInfo's remarks for how IsBluetooth is detected.")
 .Produces<List<PrinterInfo>>(StatusCodes.Status200OK);
 
-// ---- Mock shipping labels API (self-hosted stand-in "external" data source) ----
-// count controls the array length: count=1 -> 1 object, count=10 -> 10 objects. Each
-// label is one page, so count == page count for the PDF endpoints below. /pdf and /preview
-// resolve pageSize via PageSizeResolver and hand the PDF service a concrete PageSize (the
-// default is this API's ISO C7 (114mm x 81mm) label, not A4). /print always builds at that
-// same default and instead forwards pageSize/orientation/fitMode straight to SumatraPDF -
-// see its own handler below.
+// ---- Shipping labels ----
+// Labels come from IMockShippingLabelsSource, called in-process as a service (there is no
+// longer a /api/mock/shipping-labels route). Each label is one page, and every PDF is built
+// at the label template's own page size (ShippingLabelPdfService.TemplatePageSize) - no
+// endpoint takes a pageSize for the generated PDF.
 
-// GET /api/mock/shipping-labels?count=1 - the mock API route itself
-app.MapGet("/api/mock/shipping-labels", (IMockShippingLabelsSource source, int count = 1) =>
+// GET /api/mock/shipping-labels/pdf?count=1 - generates mock labels in-process and turns
+// them straight into label pages (one label per page) at the template's page size
+app.MapGet("/api/mock/shipping-labels/pdf", (IMockShippingLabelsSource source, IShippingLabelPdfService pdf, int count = 1) =>
 {
     if (count < 1)
         return Results.BadRequest(new { error = "count must be 1 or greater." });
 
     var labels = source.GenerateLabels(count);
-    return Results.Ok(labels);
-})
-.WithName("GetMockShippingLabels")
-.WithSummary("Mock shipping labels API")
-.WithDescription("Stand-in for an external API. Returns a JSON array of randomly generated carrier shipping labels (送り状) - count=1 gives a 1-item array, count=10 gives a 10-item array, and so on.")
-.Produces<List<ShippingLabel>>(StatusCodes.Status200OK)
-.ProducesValidationProblem(StatusCodes.Status400BadRequest);
 
-// GET /api/mock/shipping-labels/pdf?count=1&pageSize=A4 - generates mock labels in-process
-// and turns them straight into label pages (one label per page)
-app.MapGet("/api/mock/shipping-labels/pdf", (IMockShippingLabelsSource source, IShippingLabelPdfService pdf, int count = 1, string? pageSize = null) =>
-{
-    if (count < 1)
-        return Results.BadRequest(new { error = "count must be 1 or greater." });
-
-    if (!PageSizeResolver.TryResolve(pageSize, PageOrientation.Landscape, out var resolvedPageSize, out var pageSizeError))
-        return Results.BadRequest(new { error = pageSizeError });
-
-    var labels = source.GenerateLabels(count);
-
-    var document = pdf.BuildLabelsDocument(labels, resolvedPageSize);
+    var document = pdf.BuildLabelsDocument(labels);
     var bytes = document.GeneratePdf();
     return Results.File(bytes, "application/pdf", $"shipping-labels-{count}.pdf");
 })
 .WithName("DownloadMockShippingLabelsPdf")
 .WithSummary("Download the mock shipping labels PDF directly")
-.WithDescription("count: number of labels/pages, >= 1 (default 1). pageSize: a QuestPDF size name, e.g. A4, A5, A3, Letter, Legal, Ledger (default: this API's ISO C7 114x81mm landscape label).")
+.WithDescription("count: number of labels/pages, >= 1 (default 1). The PDF's page size is always the label template's size (ISO C7, 114x81mm landscape).")
 .Produces(StatusCodes.Status200OK, contentType: "application/pdf")
 .ProducesValidationProblem(StatusCodes.Status400BadRequest);
 
-// POST /api/mock/shipping-labels/preview - build the mock shipping labels PDF and push it to the Companion App
+// POST /api/mock/shipping-labels/preview - build one mock shipping label PDF (template page
+// size) and push it to the Companion App
 app.MapPost("/api/mock/shipping-labels/preview", (ShippingLabelsPreviewRequest request, IMockShippingLabelsSource source, IShippingLabelPdfService pdf, IDocumentDeliveryService delivery) =>
 {
-    if (request.Count < 1)
-        return Results.BadRequest(new { error = "count must be 1 or greater." });
-
-    if (!PageSizeResolver.TryResolve(request.PageSize, PageOrientation.Landscape, out var resolvedPageSize, out var pageSizeError))
-        return Results.BadRequest(new { error = pageSizeError });
-
-    var labels = source.GenerateLabels(request.Count);
-    var document = pdf.BuildLabelsDocument(labels, resolvedPageSize);
-    return delivery.Preview(document, request.CompanionPort, $"shipping labels ({labels.Count} label(s))");
+    var labels = source.GenerateLabels(1);
+    var document = pdf.BuildLabelsDocument(labels);
+    return delivery.Preview(document, request.CompanionPort, "shipping label");
 })
 .WithName("PreviewMockShippingLabels")
-.WithSummary("Preview the mock shipping labels in the Companion App")
-.WithDescription("count: number of labels/pages, >= 1 (default 1). companionPort: Companion App port (default 12500). pageSize: a QuestPDF size name, e.g. A4, A5, A3, Letter, Legal, Ledger (default: this API's ISO C7 114x81mm landscape label).")
-.Produces(StatusCodes.Status200OK)
-.ProducesValidationProblem(StatusCodes.Status400BadRequest);
+.WithSummary("Preview a mock shipping label in the Companion App")
+.WithDescription("Always previews 1 label at the template's page size. companionPort: Companion App port (default 12500).")
+.Produces(StatusCodes.Status200OK);
 
 // POST /api/mock/shipping-labels/print - build the mock shipping labels PDF and send it straight to a printer.
-// pageSize/orientation/fitMode are print-only here: they're forwarded as-is to SumatraPDF
+// pageSize/orientation are print-only here: they're forwarded as-is to SumatraPDF
 // (see PrinterService.PrintFileAsync) and never change the PDF's own page geometry, which is
-// always built at PageSizeResolver.BuildDefault(). That also means pageSize isn't limited to
-// PageSizeResolver's named sizes - any "paper=" value SumatraPDF/the driver accepts works.
+// always the template's page size. That also means pageSize isn't limited to any named
+// sizes - any "paper=" value SumatraPDF/the driver accepts works. Printing is always
+// 1:1 ("noscale"), so there is no fit mode to choose.
 app.MapPost("/api/mock/shipping-labels/print", async (ShippingLabelsPrintRequest request, IMockShippingLabelsSource source, IShippingLabelPdfService pdf, IDocumentDeliveryService delivery, CancellationToken ct) =>
 {
     if (request.Count < 1)
         return Results.BadRequest(new { error = "count must be 1 or greater." });
 
     var labels = source.GenerateLabels(request.Count);
-    var document = pdf.BuildLabelsDocument(labels, PageSizeResolver.BuildDefault());
-    return await delivery.PrintAsync(document, request.PrinterName, $"shipping labels ({labels.Count} label(s))", request.Dpi, request.FitMode, request.Orientation, request.PageSize, ct);
+    var document = pdf.BuildLabelsDocument(labels);
+    return await delivery.PrintAsync(document, request.PrinterName, $"shipping labels ({labels.Count} label(s))", request.Dpi, request.Orientation, request.PageSize, ct);
 })
 .WithName("PrintMockShippingLabels")
 .WithSummary("Print the mock shipping labels")
-.WithDescription("printerName: required, see GET /api/printers. count: number of labels/pages, >= 1 (default 1). dpi: optional, omit for the printer's own default resolution. pageSize, orientation, fitMode are print-only - forwarded to SumatraPDF, not used to resize the PDF: pageSize is any SumatraPDF paper value (e.g. A4, or a custom size like '76mm x 130mm'), omit for the printer's current paper; orientation is Landscape (default) or Portrait; fitMode is Fit (default, no rescale) or Contain (scale to fit).")
+.WithDescription("printerName: required, see GET /api/printers. count: number of labels/pages, >= 1 (default 1). dpi: optional, omit for the printer's own default resolution. pageSize and orientation are print-only - forwarded to SumatraPDF, not used to resize the PDF: pageSize is any SumatraPDF paper value (e.g. A4, or a custom size like '76mm x 130mm'), omit for the printer's current paper; orientation is Landscape (default) or Portrait. Printing is always at 1:1 scale (no rescale).")
 .Produces(StatusCodes.Status200OK)
 .ProducesValidationProblem(StatusCodes.Status400BadRequest);
 

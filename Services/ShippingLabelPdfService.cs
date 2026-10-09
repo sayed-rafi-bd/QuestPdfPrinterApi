@@ -10,16 +10,15 @@ namespace QuestPdfPrinterApi.Services;
 
 public interface IShippingLabelPdfService
 {
-    IDocument BuildLabelsDocument(List<ShippingLabel> labels, PageSize pageSize);
+    /// <summary>Builds one page per label, always at <see cref="ShippingLabelPdfService.TemplatePageSize"/>.</summary>
+    IDocument BuildLabelsDocument(List<ShippingLabel> labels);
 }
 
 /// <summary>
 /// Builds one carrier shipping label (送り状) per ShippingLabel, each on its own page.
 /// Unlike the picking slip this replaced, this is normally run on pre-cut label stock at a
-/// fixed physical size (ISO C7 (114mm x 81mm) by default - see PageSizeResolver.BuildDefault), not
-/// plain sheet stock, so the caller-facing endpoints resolve PageSize/orientation once (via
-/// PageSizeResolver) and hand the concrete PageSize in here rather than this service
-/// re-resolving a name itself.
+/// fixed physical size (ISO C7, 114mm x 81mm landscape - see TemplatePageSize), not plain
+/// sheet stock, so every page is built at that template size; callers don't choose one.
 ///
 /// FONT: Japanese-first (お届先/様/運送会社 etc. throughout), so - same as the picking slip
 /// before it - DefaultFontFamily must name a font registered before any PDF is generated;
@@ -28,6 +27,9 @@ public interface IShippingLabelPdfService
 public class ShippingLabelPdfService : IShippingLabelPdfService
 {
     public const string DefaultFontFamily = "Noto Sans JP";
+
+    /// <summary>The label template's own page size (ISO C7, 114mm x 81mm landscape).</summary>
+    public static PageSize TemplatePageSize => PageSizeResolver.BuildDefault();
 
     // Centralized palette so the whole label reads as one coherent design instead of every
     // border/caption picking its own shade. Kept to greys (no hue) on purpose: most of these
@@ -39,8 +41,9 @@ public class ShippingLabelPdfService : IShippingLabelPdfService
     private static readonly string ChipBackgroundColor = Colors.Grey.Lighten4;
     private static readonly string AccentBackgroundColor = Colors.Grey.Lighten3;
 
-    public IDocument BuildLabelsDocument(List<ShippingLabel> labels, PageSize pageSize)
+    public IDocument BuildLabelsDocument(List<ShippingLabel> labels)
     {
+        var pageSize = TemplatePageSize;
         return Document.Create(container =>
         {
             foreach (var label in labels)

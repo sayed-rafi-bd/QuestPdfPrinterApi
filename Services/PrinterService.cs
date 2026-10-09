@@ -11,7 +11,6 @@ public interface IPrinterService
         string filePath,
         string printerName,
         int? dpiOverride,
-        PrintFitMode fitMode = PrintFitMode.Fit,
         PageOrientation orientation = PageOrientation.Landscape,
         string? pageSize = null,
         CancellationToken ct = default);
@@ -144,37 +143,31 @@ public class PrinterService : IPrinterService
     /// bitmap. Both are a materially different print pipeline from this one - say the word
     /// if you want either implemented instead of/alongside SumatraPDF.
     ///
-    /// "-print-settings" gets a comma-separated token list built from fitMode, orientation,
-    /// and pageSize - all three are print-only: they configure the physical print job, not
-    /// the PDF that was generated (see ShippingLabelsPrintRequest's remarks).
-    ///  - fitMode: PrintFitMode.Fit (the default) -> "noscale"; PrintFitMode.Contain ->
-    ///    "fit". Without an explicit fitMode, SumatraPDF's own default behavior is to
-    ///    fit-to-page: rescale the PDF to match whatever paper size the printer driver is
-    ///    currently configured for. Every document this API builds is already generated at
-    ///    its intended physical page size (ISO C7 (114mm x 81mm) by default - see
-    ///    PageSizeResolver.BuildDefault), so that rescale is pure downside for the common
-    ///    case - if the driver's configured paper size doesn't match to the pixel, the extra
-    ///    resample step softens text and, worse, barcodes. "noscale" prints at 1:1 instead,
-    ///    so output stays as sharp as the chosen DPI actually allows; the tradeoff is that a
-    ///    genuinely wrong driver paper size (e.g. printing a label to a queue still
-    ///    configured for Letter) shows up as an offset/clipped print rather than being
-    ///    silently papered over - the right failure mode, since it points at the actual
-    ///    misconfiguration. Pass PrintFitMode.Contain instead when the printer's configured
-    ///    paper size is NOT known to match (e.g. previewing a label on a normal A4 office
-    ///    printer).
+    /// "-print-settings" gets a comma-separated token list built from orientation and
+    /// pageSize (both print-only: they configure the physical print job, not the PDF that
+    /// was generated - see ShippingLabelsPrintRequest's remarks), plus a fixed "noscale".
+    ///  - scaling: always "noscale". Without an explicit scale token, SumatraPDF's own
+    ///    default behavior is to fit-to-page: rescale the PDF to match whatever paper size
+    ///    the printer driver is currently configured for. Every document this API builds is
+    ///    already generated at its intended physical page size (ISO C7, 114mm x 81mm - see
+    ///    PageSizeResolver.BuildDefault), so that rescale is pure downside - if the driver's
+    ///    configured paper size doesn't match to the pixel, the extra resample step softens
+    ///    text and, worse, barcodes. "noscale" prints at 1:1 instead, so output stays as
+    ///    sharp as the chosen DPI actually allows; the tradeoff is that a genuinely wrong
+    ///    driver paper size (e.g. printing a label to a queue still configured for Letter)
+    ///    shows up as an offset/clipped print rather than being silently papered over - the
+    ///    right failure mode, since it points at the actual misconfiguration.
     ///  - orientation: passed straight through as SumatraPDF's own "portrait"/"landscape"
     ///    content-rotation token.
     ///  - pageSize: passed straight through as SumatraPDF's "paper=" token, unvalidated -
     ///    any value SumatraPDF/the driver accepts (a name like "A4", or a custom size like
-    ///    "76mm x 130mm"), so this is not limited to PageSizeResolver's named sizes. Omitted
-    ///    entirely (no "paper=" token) when null/blank, leaving the printer's own currently
-    ///    configured paper size in effect.
+    ///    "76mm x 130mm"). Omitted entirely (no "paper=" token) when null/blank, leaving the
+    ///    printer's own currently configured paper size in effect.
     /// </summary>
     public async Task PrintFileAsync(
         string filePath,
         string printerName,
         int? dpiOverride,
-        PrintFitMode fitMode = PrintFitMode.Fit,
         PageOrientation orientation = PageOrientation.Landscape,
         string? pageSize = null,
         CancellationToken ct = default)
@@ -191,9 +184,8 @@ public class PrinterService : IPrinterService
         if (dpi is int resolvedDpi)
             await TrySetDpiAsync(printerName, resolvedDpi, ct);
 
-        var scaleToken = fitMode == PrintFitMode.Contain ? "fit" : "noscale";
         var orientationToken = orientation == PageOrientation.Portrait ? "portrait" : "landscape";
-        var tokens = new List<string> { scaleToken, orientationToken };
+        var tokens = new List<string> { "noscale", orientationToken };
         if (!string.IsNullOrWhiteSpace(pageSize))
             tokens.Add($"paper={pageSize}");
         var printSettings = string.Join(',', tokens);

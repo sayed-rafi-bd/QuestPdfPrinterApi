@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shipping Labels</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-100 text-slate-800 min-h-screen">
+  <div class="max-w-5xl mx-auto p-4 sm:p-6 space-y-6">
+    <header>
+      <h1 class="text-2xl font-bold">Shipping Labels (送り状)</h1>
+      <p class="text-sm text-slate-500">Mock labels · PDFs are always built at the template size (114 × 81 mm landscape).</p>
+    </header>
+
+    <!-- PDF -->
+    <section class="bg-white rounded-xl shadow p-5 space-y-4">
+      <h2 class="text-lg font-semibold">PDF</h2>
+      <div class="flex flex-wrap items-end gap-4">
+        <label class="block">
+          <span class="block text-sm font-medium mb-1">Labels (pages)</span>
+          <input id="pdfCount" type="number" min="1" value="1" class="w-28 rounded-lg border border-slate-300 px-3 py-2">
+        </label>
+        <button id="pdfPreviewBtn" class="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 font-medium">Show here</button>
+        <button id="pdfDownloadBtn" class="rounded-lg bg-slate-200 hover:bg-slate-300 px-4 py-2 font-medium">Download</button>
+      </div>
+      <p id="pdfStatus" class="text-sm"></p>
+      <iframe id="pdfFrame" class="hidden w-full h-[480px] rounded-lg border border-slate-300 bg-slate-50"></iframe>
+    </section>
+
+    <!-- Companion preview -->
+    <section class="bg-white rounded-xl shadow p-5 space-y-4">
+      <h2 class="text-lg font-semibold">Companion App preview</h2>
+      <p class="text-sm text-slate-500">Always sends 1 label. The Companion App must be running on the same machine as this server.</p>
+      <div class="flex flex-wrap items-end gap-4">
+        <label class="block">
+          <span class="block text-sm font-medium mb-1">Companion port</span>
+          <input id="companionPort" type="number" min="1" max="65535" value="12500" class="w-32 rounded-lg border border-slate-300 px-3 py-2">
+        </label>
+        <button id="companionBtn" class="rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 font-medium">Send to Companion</button>
+      </div>
+      <p id="companionStatus" class="text-sm"></p>
+    </section>
+
+    <!-- Print -->
+    <section class="bg-white rounded-xl shadow p-5 space-y-4">
+      <h2 class="text-lg font-semibold">Print</h2>
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="block sm:col-span-2">
+          <span class="block text-sm font-medium mb-1">Printer</span>
+          <div class="flex gap-2">
+            <select id="printer" class="flex-1 rounded-lg border border-slate-300 px-3 py-2 bg-white"></select>
+            <button id="refreshPrinters" type="button" class="rounded-lg bg-slate-200 hover:bg-slate-300 px-3 py-2 text-sm font-medium">Reload</button>
+          </div>
+          <span id="printerHint" class="block text-xs text-slate-500 mt-1"></span>
+        </label>
+
+        <label class="block">
+          <span class="block text-sm font-medium mb-1">Labels (pages)</span>
+          <input id="printCount" type="number" min="1" value="1" class="w-full rounded-lg border border-slate-300 px-3 py-2">
+        </label>
+
+        <label class="block">
+          <span class="block text-sm font-medium mb-1">Orientation</span>
+          <select id="orientation" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white">
+            <option value="Landscape" selected>Landscape</option>
+            <option value="Portrait">Portrait</option>
+          </select>
+        </label>
+
+        <label class="block">
+          <span class="block text-sm font-medium mb-1">Paper size</span>
+          <select id="paperSelect" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white">
+            <option value="">Printer's current paper</option>
+            <option value="114mm x 81mm">114mm x 81mm (template)</option>
+            <option value="76mm x 130mm">76mm x 130mm</option>
+            <option value="A4">A4</option>
+            <option value="A5">A5</option>
+            <option value="A6">A6</option>
+            <option value="__custom">Custom…</option>
+          </select>
+          <input id="paperCustom" type="text" placeholder="e.g. 100mm x 150mm" class="hidden mt-2 w-full rounded-lg border border-slate-300 px-3 py-2">
+        </label>
+
+        <label class="block">
+          <span class="block text-sm font-medium mb-1">DPI</span>
+          <select id="dpi" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white">
+            <option value="">Printer default</option>
+            <option value="203">203</option>
+            <option value="300">300</option>
+            <option value="600">600</option>
+          </select>
+        </label>
+      </div>
+      <div class="flex items-center gap-4">
+        <button id="printBtn" class="rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 font-medium">Print</button>
+        <p id="printStatus" class="text-sm"></p>
+      </div>
+      <p class="text-xs text-slate-500">Time shown for Print is until the job is queued, not until the printer finishes. Printing is always 1:1 (no rescale). Paper size and orientation only affect the print job, not the PDF.</p>
+    </section>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  function setStatus(el, text, ok) {
+    el.textContent = text;
+    el.className = 'text-sm ' + (ok ? 'text-emerald-700' : 'text-red-600');
+  }
+
+  function fmtMs(ms) {
+    return ms >= 1000 ? (ms / 1000).toFixed(2) + ' s' : Math.round(ms) + ' ms';
+  }
+
+  // fetch + timing: total = browser round trip until the response body is fully read;
+  // server = the app's own processing time from the Server-Timing header (when present).
+  async function timedFetch(url, options, as = 'json') {
+    const t0 = performance.now();
+    const res = await fetch(url, options);
+    let body;
+    if (as === 'blob') body = res.ok ? await res.blob() : await res.json().catch(() => ({}));
+    else body = await res.json().catch(() => ({}));
+    const total = performance.now() - t0;
+    const m = /dur=([\d.]+)/.exec(res.headers.get('Server-Timing') || '');
+    const server = m ? parseFloat(m[1]) : null;
+    return { res, body, total, server };
+  }
+
+  function timeText(r) {
+    return ' · ' + fmtMs(r.total) + (r.server !== null ? ' (server ' + fmtMs(r.server) + ')' : '');
+  }
+
+  function msgOf(body, res) {
+    return (body && (body.message || body.error || body.title)) || res.statusText || ('HTTP ' + res.status);
+  }
+
+
+  function pdfUrl() {
+    return '/api/mock/shipping-labels/pdf?count=' + encodeURIComponent($('pdfCount').value || 1);
+  }
+
+  async function fetchPdf() {
+    const st = $('pdfStatus');
+    st.textContent = 'Generating…'; st.className = 'text-sm text-slate-500';
+    try {
+      const r = await timedFetch(pdfUrl(), undefined, 'blob');
+      if (!r.res.ok) { setStatus(st, msgOf(r.body, r.res) + timeText(r), false); return null; }
+      setStatus(st, 'PDF ready (' + Math.round(r.body.size / 1024) + ' KB)' + timeText(r), true);
+      return r.body;
+    } catch (err) { setStatus(st, 'Request failed: ' + err.message, false); return null; }
+  }
+
+  let currentPdfUrl = null;
+  $('pdfPreviewBtn').addEventListener('click', async () => {
+    const blob = await fetchPdf();
+    if (!blob) return;
+    if (currentPdfUrl) URL.revokeObjectURL(currentPdfUrl);
+    currentPdfUrl = URL.createObjectURL(blob);
+    $('pdfFrame').classList.remove('hidden');
+    $('pdfFrame').src = currentPdfUrl;
+  });
+  $('pdfDownloadBtn').addEventListener('click', async () => {
+    const blob = await fetchPdf();
+    if (!blob) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'shipping-labels-' + ($('pdfCount').value || 1) + '.pdf';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+
+  // ---- Companion ----
+  $('companionBtn').addEventListener('click', async () => {
+    const st = $('companionStatus');
+    st.textContent = 'Sending…'; st.className = 'text-sm text-slate-500';
+    try {
+      const port = parseInt($('companionPort').value, 10);
+      const r = await timedFetch('/api/mock/shipping-labels/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ companionPort: Number.isFinite(port) ? port : null })
+      });
+      setStatus(st, msgOf(r.body, r.res) + timeText(r), r.res.ok);
+    } catch (err) { setStatus(st, 'Request failed: ' + err.message, false); }
+  });
+
+  // ---- Printers ----
+  async function loadPrinters() {
+    const sel = $('printer'), hint = $('printerHint');
+    sel.innerHTML = '<option value="">Loading…</option>';
+    hint.textContent = '';
+    try {
+      const r = await timedFetch('/api/printers');
+      if (!r.res.ok) throw new Error(msgOf(r.body, r.res));
+      const printers = r.body;
+      hint.textContent = 'Loaded ' + printers.length + ' printer(s)' + timeText(r);
+      sel.innerHTML = '';
+      if (!printers.length) {
+        sel.innerHTML = '<option value="">No printers found</option>';
+        return;
+      }
+      for (const p of printers) {
+        const o = document.createElement('option');
+        o.value = p.name;
+        o.textContent = p.name + (p.isBluetooth ? '  (Bluetooth)' : '') + (p.portName ? '  — ' + p.portName : '');
+        sel.appendChild(o);
+      }
+      const saved = localStorage.getItem('printer');
+      if (saved && printers.some(p => p.name === saved)) sel.value = saved;
+    } catch (err) {
+      sel.innerHTML = '<option value="">Could not load printers</option>';
+      hint.textContent = err.message + ' (listing printers needs Windows + PowerShell)';
+    }
+  }
+  $('printer').addEventListener('change', () => localStorage.setItem('printer', $('printer').value));
+  $('refreshPrinters').addEventListener('click', loadPrinters);
+
+  $('paperSelect').addEventListener('change', () => {
+    $('paperCustom').classList.toggle('hidden', $('paperSelect').value !== '__custom');
+  });
+
+  // ---- Print ----
+  $('printBtn').addEventListener('click', async () => {
+    const st = $('printStatus');
+    const printerName = $('printer').value;
+    if (!printerName) { setStatus(st, 'Select a printer first.', false); return; }
+
+    let pageSize = $('paperSelect').value;
+    if (pageSize === '__custom') pageSize = $('paperCustom').value.trim();
+    const dpi = $('dpi').value;
+
+    st.textContent = 'Sending…'; st.className = 'text-sm text-slate-500';
+    try {
+      const r = await timedFetch('/api/mock/shipping-labels/print', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          printerName,
+          count: parseInt($('printCount').value, 10) || 1,
+          pageSize: pageSize || null,
+          orientation: $('orientation').value,
+          dpi: dpi ? parseInt(dpi, 10) : null
+        })
+      });
+      setStatus(st, msgOf(r.body, r.res) + timeText(r), r.res.ok);
+    } catch (err) { setStatus(st, 'Request failed: ' + err.message, false); }
+  });
+
+  loadPrinters();
+</script>
+</body>
+</html>

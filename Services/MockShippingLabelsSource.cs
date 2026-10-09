@@ -8,9 +8,10 @@ public interface IMockShippingLabelsSource
 }
 
 /// <summary>
-/// Backs the mock GET /api/mock/shipping-labels endpoint as a self-hosted stand-in for a
-/// real data source. Generates `count` random-but-plausible labels so it needs no database -
-/// swap for a real repository later without touching the endpoint or the PDF code.
+/// Self-hosted stand-in for a real shipping-labels data source, called in-process as a
+/// service by the PDF/preview/print endpoints. Generates `count` random-but-plausible labels
+/// so it needs no database - swap for a real repository later without touching the
+/// endpoints or the PDF code.
 /// </summary>
 public class MockShippingLabelsSource : IMockShippingLabelsSource
 {

@@ -1,9 +1,8 @@
 namespace QuestPdfPrinterApi.Models;
 
-// Shape returned by GET /api/mock/shipping-labels - a self-hosted stand-in "external" API
-// endpoint. count controls how many objects come back: count=1 -> a 1-item array,
-// count=10 -> a 10-item array, and so on. Each label renders as exactly one page (see
-// ShippingLabelPdfService), so count == page count here too.
+// Shape produced by IMockShippingLabelsSource (a self-hosted stand-in for an "external" data
+// source, called in-process as a service). Each label renders as exactly one page (see
+// ShippingLabelPdfService), so label count == page count.
 
 public class ShippingLabel
 {
@@ -77,29 +76,24 @@ public class ShippingLabel
 }
 
 /// <summary>
-/// Body for POST /api/mock/shipping-labels/preview. count=1 -> 1 label, count=10 -> 10
-/// labels, and so on. PageSize controls the generated PDF's own page geometry - see
-/// PageSizeResolver; defaults to this API's ISO C7 (114mm x 81mm) landscape label. No
-/// Orientation here - preview always renders a named PageSize in its landscape form.
+/// Body for POST /api/mock/shipping-labels/preview. Always previews exactly 1 label at the
+/// label template's own page size, so the only option is which Companion App port to push to.
 /// </summary>
-public record ShippingLabelsPreviewRequest(
-    int Count = 1,
-    int? CompanionPort = null,
-    string? PageSize = null);
+public record ShippingLabelsPreviewRequest(int? CompanionPort = null);
 
 /// <summary>
 /// Body for POST /api/mock/shipping-labels/print. PrinterName is required - use GET
 /// /api/printers to see what's available. Count controls how many labels/pages.
 ///
-/// The PDF itself is always built at this API's default ISO C7 (114mm x 81mm) landscape
-/// label size - PageSize/Orientation/FitMode here do NOT change that geometry. Instead
+/// The PDF itself is always built at the label template's own page size (ISO C7, 114mm x
+/// 81mm landscape) - PageSize/Orientation here do NOT change that geometry. Instead
 /// they're forwarded as-is to SumatraPDF's -print-settings for the physical print job (see
 /// PrinterService.PrintFileAsync):
 ///  - PageSize becomes the "paper=" token - any value SumatraPDF/the driver accepts (a
 ///    name like "A4", or a custom size like "76mm x 130mm"). Omit it to print on whatever
 ///    paper the printer is currently configured for.
 ///  - Orientation becomes "portrait"/"landscape" (default Landscape).
-///  - FitMode becomes "noscale" (Fit, the default) or "fit" (Contain).
+///  - Scaling is always "noscale" (1:1) - there is no fit mode option.
 ///
 /// Dpi is an optional per-job override (see PrinterService); omit it to print at the
 /// printer's own current default resolution, which is the right choice for most
@@ -111,5 +105,4 @@ public record ShippingLabelsPrintRequest(
     int Count = 1,
     string? PageSize = null,
     PageOrientation Orientation = PageOrientation.Landscape,
-    int? Dpi = null,
-    PrintFitMode FitMode = PrintFitMode.Fit);
+    int? Dpi = null);
