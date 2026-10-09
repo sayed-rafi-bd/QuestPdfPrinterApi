@@ -237,7 +237,7 @@ public class PrinterService : IPrinterService
         // -silent hides SumatraPDF's own error dialogs, so log exactly what is being asked of it.
         Console.WriteLine($"[PRINT] printer '{printerName}', print-settings \"{printSettings}\"");
 
-        await RunAsync(_sumatraPath, new[] { "-print-to", printerName, "-print-settings", printSettings, filePath }, ct);
+        await RunAsync(_sumatraPath, new[] { "-print-to", printerName, "-print-settings", printSettings, "-silent", filePath }, ct);
     }
 
     /// <summary>
