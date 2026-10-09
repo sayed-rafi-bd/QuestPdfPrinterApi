@@ -89,6 +89,7 @@ builder.Services.AddSingleton<IMockShippingLabelsSource, MockShippingLabelsSourc
 builder.Services.AddSingleton<IShippingLabelPdfService, ShippingLabelPdfService>();
 builder.Services.AddSingleton<IPrinterService, PrinterService>();
 builder.Services.AddSingleton<IDocumentDeliveryService, DocumentDeliveryService>();
+builder.Services.AddSingleton<IHotspotService, HotspotService>();
 
 var app = builder.Build();
 
@@ -107,6 +108,9 @@ app.Lifetime.ApplicationStarted.Register(() =>
 app.Lifetime.ApplicationStopping.Register(() =>
 {
     try { File.Delete(urlFile); } catch { /* best-effort */ }
+    // Turn the hotspot off again if this app turned it on.
+    try { app.Services.GetRequiredService<IHotspotService>().StopIfStartedByAppAsync().Wait(TimeSpan.FromSeconds(10)); }
+    catch { /* best-effort */ }
 });
 
 // Bundle a CJK font the same way PrinterService bundles SumatraPDF.exe: drop the
@@ -154,11 +158,13 @@ app.UseStaticFiles();
 // show the address to type on a phone/tablet. Network URLs are only listed when the app is
 // actually listening on all adapters (see allowNetwork above, or an explicit --urls with
 // 0.0.0.0 / *). These are LAN addresses - reachable from the same network, not the internet.
+bool IsNetworkEnabled() => app.Urls.Any(u =>
+    u.Contains("://0.0.0.0") || u.Contains("://[::]") || u.Contains("://*") || u.Contains("://+"));
+
 app.MapGet("/api/server-info", (HttpContext ctx) =>
 {
     var port = ctx.Request.Host.Port ?? 80;
-    var networkEnabled = app.Urls.Any(u =>
-        u.Contains("://0.0.0.0") || u.Contains("://[::]") || u.Contains("://*") || u.Contains("://+"));
+    var networkEnabled = IsNetworkEnabled();
     var networkUrls = networkEnabled
         ? GetLanAddresses().Select(ip => $"http://{ip}:{port}").ToList()
         : new List<string>();
@@ -171,6 +177,73 @@ app.MapGet("/api/server-info", (HttpContext ctx) =>
 })
 .WithName("GetServerInfo")
 .Produces(StatusCodes.Status200OK);
+
+// ---- Phone hotspot (Windows Mobile Hotspot) + QR codes ----
+// GET  /api/hotspot        - current state: off/on/starting, devices joined, and what to show as QR codes
+// POST /api/hotspot/start  - turn the hotspot on (needs network access enabled, see allowNetwork)
+// POST /api/hotspot/stop   - turn it off
+// GET  /api/qr?text=...    - PNG QR code for any text (the Wi-Fi join payload or the app URL)
+// The UI shows the Wi-Fi QR first, then switches to the app-URL QR once a device has joined.
+object HotspotResponse(HotspotState s, IHotspotService hotspot, int port)
+{
+    var on = s.State == "on";
+    var hotspotIp = on ? (hotspot.GetHotspotAddress() ?? "192.168.137.1") : null;
+    return new
+    {
+        supported = s.Supported,
+        state = s.State,
+        clientCount = s.ClientCount,
+        ssid = on ? s.Ssid : null,
+        passphrase = on ? s.Passphrase : null,
+        wifiQrPayload = on ? s.WifiQrPayload : null,
+        appUrl = hotspotIp is null ? null : $"http://{hotspotIp}:{port}",
+        networkAccessEnabled = IsNetworkEnabled(),
+        error = s.Error
+    };
+}
+
+app.MapGet("/api/hotspot", async (IHotspotService hotspot, HttpContext ctx, CancellationToken ct) =>
+{
+    var state = await hotspot.GetStateAsync(ct);
+    return Results.Ok(HotspotResponse(state, hotspot, ctx.Request.Host.Port ?? 80));
+})
+.WithName("GetHotspot")
+.Produces(StatusCodes.Status200OK);
+
+app.MapPost("/api/hotspot/start", async (IHotspotService hotspot, HttpContext ctx, CancellationToken ct) =>
+{
+    if (!IsNetworkEnabled())
+        return Results.BadRequest(new { error = "Network access is off, so a phone could not open the app even if it joined the hotspot. Reinstall with \"Allow phones/tablets on my network\" ticked, or start the app with --network." });
+
+    var state = await hotspot.StartAsync(ct);
+    return state.Error is null
+        ? Results.Ok(HotspotResponse(state, hotspot, ctx.Request.Host.Port ?? 80))
+        : Results.BadRequest(new { error = state.Error });
+})
+.WithName("StartHotspot")
+.Produces(StatusCodes.Status200OK)
+.ProducesValidationProblem(StatusCodes.Status400BadRequest);
+
+app.MapPost("/api/hotspot/stop", async (IHotspotService hotspot, HttpContext ctx, CancellationToken ct) =>
+{
+    var state = await hotspot.StopAsync(ct);
+    return state.Error is null
+        ? Results.Ok(HotspotResponse(state, hotspot, ctx.Request.Host.Port ?? 80))
+        : Results.BadRequest(new { error = state.Error });
+})
+.WithName("StopHotspot")
+.Produces(StatusCodes.Status200OK)
+.ProducesValidationProblem(StatusCodes.Status400BadRequest);
+
+app.MapGet("/api/qr", (string text) =>
+{
+    if (string.IsNullOrWhiteSpace(text) || text.Length > 1000)
+        return Results.BadRequest(new { error = "text is required (max 1000 characters)." });
+    return Results.File(QrCodeImage.RenderPng(text), "image/png");
+})
+.WithName("GetQrCode")
+.Produces(StatusCodes.Status200OK, contentType: "image/png")
+.ProducesValidationProblem(StatusCodes.Status400BadRequest);
 
 app.MapGet("/api/printers", async (IPrinterService printers, CancellationToken ct) =>
 {
@@ -269,7 +342,8 @@ static void OpenBrowser(string url)
 }
 
 // IPv4 addresses of real LAN adapters (up, not loopback, has a default gateway - which skips
-// most VM/virtual-switch adapters - and not link-local 169.254.x.x). Wi-Fi/Ethernet first.
+// most VM/virtual-switch adapters - and not link-local 169.254.x.x), plus the Windows hotspot
+// adapter (192.168.137.x).
 static List<string> GetLanAddresses()
 {
     var result = new List<string>();
@@ -281,14 +355,16 @@ static List<string> GetLanAddresses()
             if (nic.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel) continue;
 
             var props = nic.GetIPProperties();
-            if (!props.GatewayAddresses.Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork
-                                                 && !g.Address.Equals(IPAddress.Any))) continue;
+            var hasGateway = props.GatewayAddresses.Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork
+                                                             && !g.Address.Equals(IPAddress.Any));
 
             foreach (var ua in props.UnicastAddresses)
             {
                 if (ua.Address.AddressFamily != AddressFamily.InterNetwork) continue;
                 var ip = ua.Address.ToString();
                 if (ip.StartsWith("169.254.")) continue;
+                // Windows' own hotspot adapter has no gateway but is exactly what a joined phone uses.
+                if (!hasGateway && !ip.StartsWith("192.168.137.")) continue;
                 if (!result.Contains(ip)) result.Add(ip);
             }
         }

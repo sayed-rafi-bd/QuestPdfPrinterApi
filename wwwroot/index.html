@@ -15,6 +15,22 @@
       <div id="addressBody" class="mt-1 text-indigo-800">Checking address…</div>
     </div>
 
+    <!-- Phone hotspot -->
+    <section class="bg-white rounded-xl shadow p-5 space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-lg font-semibold">Phone hotspot</h2>
+        <div class="flex gap-2">
+          <button id="hotspotStartBtn" class="rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 font-medium">Start hotspot</button>
+          <button id="hotspotStopBtn" class="hidden rounded-lg bg-slate-200 hover:bg-slate-300 px-4 py-2 font-medium">Stop hotspot</button>
+        </div>
+      </div>
+      <p id="hotspotMsg" class="text-sm text-slate-600">Checking hotspot…</p>
+      <div id="hotspotQrWrap" class="hidden flex flex-col sm:flex-row items-center gap-5">
+        <img id="hotspotQr" width="200" height="200" class="w-48 h-48 rounded-lg border border-slate-300 bg-white" alt="QR code">
+        <div id="hotspotQrText" class="text-sm space-y-1 text-center sm:text-left"></div>
+      </div>
+    </section>
+
     <header>
       <h1 class="text-2xl font-bold">Shipping Labels (送り状)</h1>
       <p class="text-sm text-slate-500">Mock labels · PDFs are always built at the template size (114 × 81 mm landscape).</p>
@@ -303,7 +319,139 @@
     }
   }
 
+  // ---- Phone hotspot ----
+  // Flow: Start -> Wi-Fi QR (phone joins) -> once a device has joined, app-URL QR.
+  let hotspotTimer = null;
+  let forceWifiQr = false;
+  let hotspotNote = '';
+  let lastHotspot = null;
+
+  function setQr(text) {
+    const img = $('hotspotQr');
+    const src = '/api/qr?text=' + encodeURIComponent(text);
+    if (img.getAttribute('src') !== src) img.setAttribute('src', src);
+  }
+
+  function renderHotspot(s) {
+    lastHotspot = s;
+    const msg = $('hotspotMsg'), startBtn = $('hotspotStartBtn'), stopBtn = $('hotspotStopBtn');
+    const wrap = $('hotspotQrWrap'), qrText = $('hotspotQrText');
+    const note = hotspotNote ? ' ' + hotspotNote : '';
+    msg.className = 'text-sm text-slate-600';
+    qrText.innerHTML = '';
+    wrap.classList.add('hidden');
+
+    if (!s.supported) {
+      startBtn.classList.add('hidden'); stopBtn.classList.add('hidden');
+      msg.textContent = s.error || 'Hotspot control needs Windows 10 or later.';
+      return;
+    }
+    startBtn.classList.remove('hidden');
+
+    const on = s.state === 'on';
+    startBtn.classList.toggle('hidden', on || s.state === 'starting');
+    stopBtn.classList.toggle('hidden', !on);
+    startBtn.disabled = !s.networkAccessEnabled;
+
+    if (!on) {
+      if (s.error && s.state === 'unknown') {
+        msg.textContent = s.error;
+        msg.className = 'text-sm text-red-600';
+        return;
+      }
+      if (s.state === 'starting') { msg.textContent = 'Starting the hotspot…' + note; return; }
+      msg.textContent = s.networkAccessEnabled
+        ? 'Start the hotspot, then scan the QR code with your phone camera to join it.' + note
+        : 'Network access is off, so a phone could not open this app. Reinstall with “Allow phones/tablets on my network” ticked, or start the app with --network.';
+      return;
+    }
+
+    wrap.classList.remove('hidden');
+    const joined = s.clientCount > 0;
+    const showUrl = joined && !forceWifiQr;
+
+    if (showUrl) {
+      setQr(s.appUrl);
+      msg.textContent = 'Hotspot is on - ' + s.clientCount + ' device(s) joined.' + note;
+      const t = document.createElement('div');
+      t.innerHTML = '<div class="font-semibold">Step 2 - scan to open this app on the phone</div>';
+      const code = document.createElement('code');
+      code.className = 'inline-block rounded bg-slate-100 border border-slate-300 px-2 py-1 font-mono select-all';
+      code.textContent = s.appUrl;
+      const again = document.createElement('button');
+      again.type = 'button';
+      again.className = 'block text-xs text-indigo-700 underline mt-2';
+      again.textContent = 'Show the Wi-Fi QR code again';
+      again.addEventListener('click', () => { forceWifiQr = true; renderHotspot(lastHotspot); });
+      qrText.append(t, code, again);
+    } else {
+      setQr(s.wifiQrPayload);
+      msg.textContent = (joined ? 'Hotspot is on - ' + s.clientCount + ' device(s) joined.' : 'Hotspot is on - waiting for a phone to join…') + note;
+      const t = document.createElement('div');
+      t.innerHTML = '<div class="font-semibold">Step 1 - scan to join the Wi-Fi</div>' +
+        '<div>Network: <b></b></div><div>Password: <b></b></div>' +
+        '<div class="text-xs text-slate-500 pt-1">The phone may say “no internet” - stay connected. The app URL QR code appears here once the phone has joined.</div>';
+      const bs = t.querySelectorAll('b');
+      bs[0].textContent = s.ssid; bs[1].textContent = s.passphrase;
+      qrText.append(t);
+      if (joined) {
+        const next = document.createElement('button');
+        next.type = 'button';
+        next.className = 'block text-xs text-indigo-700 underline mt-2';
+        next.textContent = 'Show the app URL QR code';
+        next.addEventListener('click', () => { forceWifiQr = false; renderHotspot(lastHotspot); });
+        qrText.append(next);
+      }
+    }
+  }
+
+  function scheduleHotspotPolling(s) {
+    const active = s && (s.state === 'on' || s.state === 'starting');
+    if (active && !hotspotTimer) hotspotTimer = setInterval(refreshHotspot, 3000);
+    if (!active && hotspotTimer) { clearInterval(hotspotTimer); hotspotTimer = null; }
+  }
+
+  async function refreshHotspot() {
+    try {
+      const r = await fetch('/api/hotspot');
+      const s = await r.json();
+      if (!r.ok) throw new Error(s.error || r.statusText);
+      renderHotspot(s);
+      scheduleHotspotPolling(s);
+    } catch (err) {
+      $('hotspotMsg').textContent = 'Could not read hotspot status: ' + err.message;
+      $('hotspotMsg').className = 'text-sm text-red-600';
+    }
+  }
+
+  async function hotspotAction(kind) {
+    const msg = $('hotspotMsg');
+    msg.textContent = (kind === 'start' ? 'Starting' : 'Stopping') + ' the hotspot… (this can take a few seconds)';
+    msg.className = 'text-sm text-slate-500';
+    $('hotspotStartBtn').disabled = true;
+    try {
+      const r = await timedFetch('/api/hotspot/' + kind, { method: 'POST' });
+      if (!r.res.ok) {
+        msg.textContent = msgOf(r.body, r.res) + timeText(r);
+        msg.className = 'text-sm text-red-600';
+        $('hotspotStartBtn').disabled = false;
+        return;
+      }
+      forceWifiQr = false;
+      hotspotNote = '· ' + (kind === 'start' ? 'started' : 'stopped') + timeText(r).replace(' · ', ' in ');
+      renderHotspot(r.body);
+      scheduleHotspotPolling(r.body);
+    } catch (err) {
+      msg.textContent = 'Request failed: ' + err.message;
+      msg.className = 'text-sm text-red-600';
+      $('hotspotStartBtn').disabled = false;
+    }
+  }
+  $('hotspotStartBtn').addEventListener('click', () => hotspotAction('start'));
+  $('hotspotStopBtn').addEventListener('click', () => hotspotAction('stop'));
+
   loadServerInfo();
+  refreshHotspot();
   loadPrinters();
 </script>
 </body>

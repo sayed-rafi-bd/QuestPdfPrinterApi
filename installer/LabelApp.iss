@@ -3,7 +3,7 @@
 
 #define AppName "Shipping Label Printer"
 #define AppVersion "1.0.0"
-#define AppExe "QuestPdfPrinterApi.exe"
+#define AppExe "ShippingLabelPrinter.exe"
 #define Publish "..\publish"
 
 ; Fail the build early (instead of shipping a broken installer) if a bundled tool is missing.

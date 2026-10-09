@@ -7,6 +7,13 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <RootNamespace>QuestPdfPrinterApi</RootNamespace>
     <Version>1.0.0</Version>
+    <!-- Names shown by Windows. Task Manager's "Name" column and the file's Properties -> Details
+         come from AssemblyTitle (FileDescription) and Product; the Details tab's process name
+         is the exe name (AssemblyName). Keep these in step with AppName/AppExe in installer\LabelApp.iss. -->
+    <AssemblyName>ShippingLabelPrinter</AssemblyName>
+    <AssemblyTitle>Shipping Label Printer</AssemblyTitle>
+    <Product>Shipping Label Printer</Product>
+    <Description>Shipping Label Printer</Description>
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
     <!-- The installer build (build-installer.ps1) passes -p:HideConsole=true so the installed
          app runs with no console window. Normal `dotnet run` keeps the console. -->
