@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using System.Text.Json.Serialization;
 using QuestPDF.Fluent;
 using QuestPDF.Infrastructure;
@@ -6,7 +9,62 @@ using QuestPdfPrinterApi.Services;
 
 QuestPDF.Settings.License = LicenseType.Community;
 
+// ---- Installed-app behavior (see installer/) ----
+// --open-browser : open the UI in the default browser once the server is up.
+// --log-to-file  : write console output to %LocalAppData%\LabelApp\app.log (the installed
+//                  build has no console window, so this is where errors/timings go).
+// Only one instance runs per user session; launching it again just opens the browser at the
+// running instance's URL. The mutex name must match AppMutex in installer/LabelApp.iss.
+var openBrowser = args.Contains("--open-browser");
+var logToFile = args.Contains("--log-to-file");
+var stateDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LabelApp");
+Directory.CreateDirectory(stateDir);
+var urlFile = Path.Combine(stateDir, "url.txt");
+
+using var instanceMutex = new Mutex(true, "LabelApp.SingleInstance", out var isFirstInstance);
+if (!isFirstInstance)
+{
+    if (openBrowser)
+    {
+        // The first instance may still be starting - wait up to ~10s for it to publish its URL.
+        for (var i = 0; i < 40; i++)
+        {
+            if (File.Exists(urlFile))
+            {
+                try { OpenBrowser(File.ReadAllText(urlFile).Trim()); } catch { /* ignore */ }
+                break;
+            }
+            Thread.Sleep(250);
+        }
+    }
+    return;
+}
+
+try { File.Delete(urlFile); } catch { /* stale file from a crashed run - overwritten on start */ }
+
+if (logToFile)
+{
+    var logPath = Path.Combine(stateDir, "app.log");
+    try
+    {
+        if (File.Exists(logPath) && new FileInfo(logPath).Length > 2_000_000)
+            File.Delete(logPath);
+        var writer = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true };
+        Console.SetOut(writer);
+        Console.SetError(writer);
+    }
+    catch { /* logging is best-effort */ }
+}
+
 var builder = WebApplication.CreateBuilder(args);
+
+// No explicit URL (--urls / ASPNETCORE_URLS, which `dotnet run` sets from launchSettings.json):
+// listen on localhost only, on 5080 or the next free port if something else is using it.
+var hasExplicitUrls = args.Any(a => a.StartsWith("--urls", StringComparison.OrdinalIgnoreCase))
+    || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ASPNETCORE_URLS"))
+    || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DOTNET_URLS"));
+if (!hasExplicitUrls)
+    builder.WebHost.UseUrls($"http://localhost:{FindFreePort(5080)}");
 
 // So PageOrientation is accepted/returned as "Portrait"/"Landscape" in
 // JSON request/response bodies instead of raw integers.
@@ -19,6 +77,23 @@ builder.Services.AddSingleton<IPrinterService, PrinterService>();
 builder.Services.AddSingleton<IDocumentDeliveryService, DocumentDeliveryService>();
 
 var app = builder.Build();
+
+app.Lifetime.ApplicationStarted.Register(() =>
+{
+    var url = (app.Urls.FirstOrDefault() ?? "http://localhost:5080")
+        .Replace("://0.0.0.0", "://localhost")
+        .Replace("://[::]", "://localhost")
+        .Replace("://*", "://localhost")
+        .Replace("://+", "://localhost");
+    try { File.WriteAllText(urlFile, url); } catch { /* best-effort */ }
+    Console.WriteLine($"[APP] Listening on {url}");
+    if (openBrowser)
+        OpenBrowser(url);
+});
+app.Lifetime.ApplicationStopping.Register(() =>
+{
+    try { File.Delete(urlFile); } catch { /* best-effort */ }
+});
 
 // Bundle a CJK font the same way PrinterService bundles SumatraPDF.exe: drop the
 // .ttf/.otf in Tools/Fonts (copied next to the app's binaries by the .csproj), point
@@ -117,7 +192,7 @@ app.MapPost("/api/mock/shipping-labels/preview", (ShippingLabelsPreviewRequest r
 // (see PrinterService.PrintFileAsync) and never change the PDF's own page geometry, which is
 // always the template's page size. That also means pageSize isn't limited to any named
 // sizes - any "paper=" value SumatraPDF/the driver accepts works. Printing is always
-// 1:1 ("noscale"), so there is no fit mode to choose.
+// fit-to-paper ("fit"), so there is no fit mode to choose.
 app.MapPost("/api/mock/shipping-labels/print", async (ShippingLabelsPrintRequest request, IMockShippingLabelsSource source, IShippingLabelPdfService pdf, IDocumentDeliveryService delivery, CancellationToken ct) =>
 {
     if (request.Count < 1)
@@ -129,8 +204,30 @@ app.MapPost("/api/mock/shipping-labels/print", async (ShippingLabelsPrintRequest
 })
 .WithName("PrintMockShippingLabels")
 .WithSummary("Print the mock shipping labels")
-.WithDescription("printerName: required, see GET /api/printers. count: number of labels/pages, >= 1 (default 1). dpi: optional, omit for the printer's own default resolution. pageSize and orientation are print-only - forwarded to SumatraPDF, not used to resize the PDF: pageSize is any SumatraPDF paper value (e.g. A4, or a custom size like '76mm x 130mm'), omit for the printer's current paper; orientation is Landscape (default) or Portrait. Printing is always at 1:1 scale (no rescale).")
+.WithDescription("printerName: required, see GET /api/printers. count: number of labels/pages, >= 1 (default 1). dpi: optional, omit for the printer's own default resolution. pageSize and orientation are print-only - forwarded to SumatraPDF, not used to resize the PDF: pageSize is any SumatraPDF paper value (e.g. A4, or a custom size like '76mm x 130mm'), omit for the printer's current paper; orientation is Landscape (default) or Portrait. Printing always scales the page to fit the paper.")
 .Produces(StatusCodes.Status200OK)
 .ProducesValidationProblem(StatusCodes.Status400BadRequest);
 
 app.Run();
+
+static int FindFreePort(int start)
+{
+    for (var port = start; port < start + 50; port++)
+    {
+        try
+        {
+            var listener = new TcpListener(IPAddress.Loopback, port);
+            listener.Start();
+            listener.Stop();
+            return port;
+        }
+        catch (SocketException) { /* in use - try the next one */ }
+    }
+    throw new InvalidOperationException($"No free port found between {start} and {start + 49}.");
+}
+
+static void OpenBrowser(string url)
+{
+    try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
+    catch (Exception ex) { Console.Error.WriteLine($"[APP] Could not open the browser for {url}: {ex.Message}"); }
+}

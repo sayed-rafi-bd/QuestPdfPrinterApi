@@ -1,0 +1,10 @@
+Shipping Label Printer bundles the following third-party components.
+
+QuestPDF - https://www.questpdf.com  (Community license; see their license terms)
+SkiaSharp - MIT License
+ZXing.Net - Apache License 2.0
+.NET runtime - MIT License
+Noto Sans JP - SIL Open Font License 1.1, https://fonts.google.com/noto/specimen/Noto+Sans+JP
+SumatraPDF - GNU GPL v3, https://www.sumatrapdfreader.org  (source: https://github.com/sumatrapdfreader/sumatrapdf)
+  SumatraPDF.exe is included unmodified, as a separate program that this app launches to print.
+Tailwind CSS - MIT License (loaded from cdn.tailwindcss.com when the UI is opened)

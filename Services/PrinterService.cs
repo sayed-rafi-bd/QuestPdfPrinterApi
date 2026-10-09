@@ -68,7 +68,7 @@ public interface IPrinterService
 /// pass-through. Raising Printing:DpiOverride makes that raster step happen at a higher
 /// resolution (visually closer to vector output) but doesn't eliminate the rasterization
 /// itself. See PrintFileAsync's remarks for what a true vector pass-through would require,
-/// and for the separate "noscale" fix for blur caused by page-fit rescaling rather than DPI.
+/// and for how the "fit" scaling token interacts with page-fit rescaling.
 /// </summary>
 public class PrinterService : IPrinterService
 {
@@ -145,18 +145,13 @@ public class PrinterService : IPrinterService
     ///
     /// "-print-settings" gets a comma-separated token list built from orientation and
     /// pageSize (both print-only: they configure the physical print job, not the PDF that
-    /// was generated - see ShippingLabelsPrintRequest's remarks), plus a fixed "noscale".
-    ///  - scaling: always "noscale". Without an explicit scale token, SumatraPDF's own
-    ///    default behavior is to fit-to-page: rescale the PDF to match whatever paper size
-    ///    the printer driver is currently configured for. Every document this API builds is
-    ///    already generated at its intended physical page size (ISO C7, 114mm x 81mm - see
-    ///    PageSizeResolver.BuildDefault), so that rescale is pure downside - if the driver's
-    ///    configured paper size doesn't match to the pixel, the extra resample step softens
-    ///    text and, worse, barcodes. "noscale" prints at 1:1 instead, so output stays as
-    ///    sharp as the chosen DPI actually allows; the tradeoff is that a genuinely wrong
-    ///    driver paper size (e.g. printing a label to a queue still configured for Letter)
-    ///    shows up as an offset/clipped print rather than being silently papered over - the
-    ///    right failure mode, since it points at the actual misconfiguration.
+    /// was generated - see ShippingLabelsPrintRequest's remarks), plus a fixed "fit".
+    ///  - scaling: always "fit" (fit to paper) - the whole page is scaled to fit within
+    ///    whatever paper size the job targets (the pageSize "paper=" value, or the printer
+    ///    driver's current paper when none is given), preserving aspect ratio. It is
+    ///    letterboxed, not cropped, if the aspect ratios differ. The tradeoff is a rescale
+    ///    step that can soften text and barcodes if the paper size differs from the PDF's
+    ///    own page size (ISO C7, 114mm x 81mm - see PageSizeResolver.BuildDefault).
     ///  - orientation: passed straight through as SumatraPDF's own "portrait"/"landscape"
     ///    content-rotation token.
     ///  - pageSize: passed straight through as SumatraPDF's "paper=" token, unvalidated -

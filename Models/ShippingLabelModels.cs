@@ -93,7 +93,7 @@ public record ShippingLabelsPreviewRequest(int? CompanionPort = null);
 ///    name like "A4", or a custom size like "76mm x 130mm"). Omit it to print on whatever
 ///    paper the printer is currently configured for.
 ///  - Orientation becomes "portrait"/"landscape" (default Landscape).
-///  - Scaling is always "noscale" (1:1) - there is no fit mode option.
+///  - Scaling is always "fit" (fit to paper) - there is no fit mode option.
 ///
 /// Dpi is an optional per-job override (see PrinterService); omit it to print at the
 /// printer's own current default resolution, which is the right choice for most

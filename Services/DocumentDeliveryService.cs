@@ -21,7 +21,7 @@ public interface IDocumentDeliveryService
     /// label printers, supports the same resolution). orientation and pageSize are
     /// print-only settings passed straight through to PrinterService.PrintFileAsync - see
     /// its remarks for what each does; neither affects how the given document was
-    /// generated. Printing is always 1:1 (no rescale).
+    /// generated. Printing is always fit-to-paper.
     /// </summary>
     Task<IResult> PrintAsync(
         IDocument document,

@@ -6,6 +6,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
     <RootNamespace>QuestPdfPrinterApi</RootNamespace>
+    <Version>1.0.0</Version>
+    <!-- The installer build (build-installer.ps1) passes -p:HideConsole=true so the installed
+         app runs with no console window. Normal `dotnet run` keeps the console. -->
+    <OutputType Condition="'$(HideConsole)' == 'true'">WinExe</OutputType>
   </PropertyGroup>
 
   <ItemGroup>
