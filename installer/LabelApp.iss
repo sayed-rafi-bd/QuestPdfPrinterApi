@@ -30,6 +30,9 @@ SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
+SetupIconFile=..\Assets\icon.ico
+WizardImageFile=..\Assets\wizard-large.bmp
+WizardSmallImageFile=..\Assets\wizard-small.bmp
 ; Installs per-user by default (no admin prompt). Printers are per-user on Windows, so the app
 ; must run as the logged-in user to see them - it is NOT installed as a service.
 PrivilegesRequired=lowest
@@ -40,16 +43,23 @@ CloseApplications=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Shortcuts:"
+Name: "network"; Description: "Allow phones/tablets on my network to use it (no login - only on a network you trust)"; GroupDescription: "Network:"; Flags: unchecked
 Name: "autostart"; Description: "Start {#AppName} when I sign in to Windows"; GroupDescription: "Startup:"; Flags: unchecked
 
 [Files]
 Source: "{#Publish}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
+; Marker file read by Program.cs: present = listen on all network adapters, not just localhost.
+Source: "network.enabled"; DestDir: "{app}"; Flags: ignoreversion; Tasks: network
+
+[InstallDelete]
+; Re-running the installer resets the option to whatever was chosen this time.
+Type: files; Name: "{app}\network.enabled"
 
 [Icons]
 ; Opens the UI (starting the app first if it isn't running).
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"; Parameters: "--open-browser --log-to-file"; WorkingDir: "{app}"
-Name: "{group}\Stop {#AppName}"; Filename: "{sys}\taskkill.exe"; Parameters: "/IM {#AppExe} /F"; Flags: runminimized
+Name: "{group}\Stop {#AppName}"; Filename: "{sys}\taskkill.exe"; Parameters: "/IM {#AppExe} /F"; IconFilename: "{app}\{#AppExe}"; Flags: runminimized
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Parameters: "--open-browser --log-to-file"; WorkingDir: "{app}"; Tasks: desktopicon
 ; Startup: run in the background without opening a browser tab.

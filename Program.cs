@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text.Json.Serialization;
 using QuestPDF.Fluent;
@@ -58,13 +59,26 @@ if (logToFile)
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Network access (phones/tablets on the same Wi-Fi): listen on all network adapters instead of
+// localhost only. On when ANY of: the --network argument, a "network.enabled" marker file next to
+// the exe (the installer's "Allow other devices" option creates it), or "App:AllowNetworkAccess"
+// in appsettings.json. There is no login, so only enable it on a network you trust.
+var allowNetwork = args.Contains("--network")
+    || File.Exists(Path.Combine(AppContext.BaseDirectory, "network.enabled"))
+    || builder.Configuration.GetValue<bool>("App:AllowNetworkAccess");
+
 // No explicit URL (--urls / ASPNETCORE_URLS, which `dotnet run` sets from launchSettings.json):
-// listen on localhost only, on 5080 or the next free port if something else is using it.
+// listen on 5080 or the next free port if something else is using it - on localhost only,
+// unless network access is enabled above.
 var hasExplicitUrls = args.Any(a => a.StartsWith("--urls", StringComparison.OrdinalIgnoreCase))
     || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ASPNETCORE_URLS"))
     || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DOTNET_URLS"));
 if (!hasExplicitUrls)
-    builder.WebHost.UseUrls($"http://localhost:{FindFreePort(5080)}");
+{
+    var bindAddress = allowNetwork ? IPAddress.Any : IPAddress.Loopback;
+    var host = allowNetwork ? "0.0.0.0" : "localhost";
+    builder.WebHost.UseUrls($"http://{host}:{FindFreePort(5080, bindAddress)}");
+}
 
 // So PageOrientation is accepted/returned as "Portrait"/"Landscape" in
 // JSON request/response bodies instead of raw integers.
@@ -135,6 +149,28 @@ app.Use(async (context, next) =>
 // Serves wwwroot/index.html (the UI) at "/".
 app.UseDefaultFiles();
 app.UseStaticFiles();
+
+// GET /api/server-info - tells the UI which addresses this app can be opened from, so it can
+// show the address to type on a phone/tablet. Network URLs are only listed when the app is
+// actually listening on all adapters (see allowNetwork above, or an explicit --urls with
+// 0.0.0.0 / *). These are LAN addresses - reachable from the same network, not the internet.
+app.MapGet("/api/server-info", (HttpContext ctx) =>
+{
+    var port = ctx.Request.Host.Port ?? 80;
+    var networkEnabled = app.Urls.Any(u =>
+        u.Contains("://0.0.0.0") || u.Contains("://[::]") || u.Contains("://*") || u.Contains("://+"));
+    var networkUrls = networkEnabled
+        ? GetLanAddresses().Select(ip => $"http://{ip}:{port}").ToList()
+        : new List<string>();
+    return Results.Ok(new
+    {
+        localUrl = $"http://localhost:{port}",
+        networkAccessEnabled = networkEnabled,
+        networkUrls
+    });
+})
+.WithName("GetServerInfo")
+.Produces(StatusCodes.Status200OK);
 
 app.MapGet("/api/printers", async (IPrinterService printers, CancellationToken ct) =>
 {
@@ -210,13 +246,13 @@ app.MapPost("/api/mock/shipping-labels/print", async (ShippingLabelsPrintRequest
 
 app.Run();
 
-static int FindFreePort(int start)
+static int FindFreePort(int start, IPAddress address)
 {
     for (var port = start; port < start + 50; port++)
     {
         try
         {
-            var listener = new TcpListener(IPAddress.Loopback, port);
+            var listener = new TcpListener(address, port);
             listener.Start();
             listener.Stop();
             return port;
@@ -230,4 +266,36 @@ static void OpenBrowser(string url)
 {
     try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
     catch (Exception ex) { Console.Error.WriteLine($"[APP] Could not open the browser for {url}: {ex.Message}"); }
+}
+
+// IPv4 addresses of real LAN adapters (up, not loopback, has a default gateway - which skips
+// most VM/virtual-switch adapters - and not link-local 169.254.x.x). Wi-Fi/Ethernet first.
+static List<string> GetLanAddresses()
+{
+    var result = new List<string>();
+    try
+    {
+        foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (nic.OperationalStatus != OperationalStatus.Up) continue;
+            if (nic.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel) continue;
+
+            var props = nic.GetIPProperties();
+            if (!props.GatewayAddresses.Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork
+                                                 && !g.Address.Equals(IPAddress.Any))) continue;
+
+            foreach (var ua in props.UnicastAddresses)
+            {
+                if (ua.Address.AddressFamily != AddressFamily.InterNetwork) continue;
+                var ip = ua.Address.ToString();
+                if (ip.StartsWith("169.254.")) continue;
+                if (!result.Contains(ip)) result.Add(ip);
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"[APP] Could not list network addresses: {ex.Message}");
+    }
+    return result;
 }
