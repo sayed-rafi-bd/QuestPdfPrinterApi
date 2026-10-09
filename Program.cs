@@ -265,6 +265,27 @@ app.MapGet("/api/printers", async (IPrinterService printers, CancellationToken c
                   "queues apart; see PrinterInfo's remarks for how IsBluetooth is detected.")
 .Produces<List<PrinterInfo>>(StatusCodes.Status200OK);
 
+// GET /api/printers/paper-sizes?printer=NAME - the paper sizes that printer's driver reports, each with
+// the driver's exact name. The UI sends that name as "pageSize" when printing. (Query string, not a
+// path segment, because printer names can contain slashes - e.g. \\server\printer.)
+app.MapGet("/api/printers/paper-sizes", async (string printer, IPrinterService printers, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(printer))
+        return Results.BadRequest(new { error = "printer is required." });
+    try
+    {
+        return Results.Ok(await printers.GetPaperSizesAsync(printer, ct));
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = $"Could not read paper sizes for '{printer}': {ex.Message}" });
+    }
+})
+.WithName("GetPaperSizes")
+.WithSummary("List the paper sizes a printer's driver reports")
+.Produces<List<PaperSizeInfo>>(StatusCodes.Status200OK)
+.ProducesValidationProblem(StatusCodes.Status400BadRequest);
+
 // ---- Shipping labels ----
 // Labels come from IMockShippingLabelsSource, called in-process as a service (there is no
 // longer a /api/mock/shipping-labels route). Each label is one page, and every PDF is built
@@ -320,7 +341,7 @@ app.MapPost("/api/mock/shipping-labels/print", async (ShippingLabelsPrintRequest
 })
 .WithName("PrintMockShippingLabels")
 .WithSummary("Print the mock shipping labels")
-.WithDescription("printerName: required, see GET /api/printers. count: number of labels/pages, >= 1 (default 1). dpi: optional, omit for the printer's own default resolution. pageSize and orientation are print-only - forwarded to SumatraPDF, not used to resize the PDF: pageSize is any SumatraPDF paper value (e.g. A4, or a custom size like '76mm x 130mm'), omit for the printer's current paper; orientation is Landscape (default) or Portrait. Printing always scales the page to fit the paper.")
+.WithDescription("printerName: required, see GET /api/printers. count: number of labels/pages, >= 1 (default 1). dpi: optional, omit for the printer's own default resolution. pageSize and orientation are print-only - forwarded to SumatraPDF, not used to resize the PDF: pageSize is a SumatraPDF paper value - best a name from GET /api/printers/paper-sizes, copied exactly (SumatraPDF ignores names the driver doesn't recognise), or a custom size like '76mm x 130mm' on recent builds; omit for the printer's current paper; orientation is Landscape (default) or Portrait. Printing always scales the page to fit the paper.")
 .Produces(StatusCodes.Status200OK)
 .ProducesValidationProblem(StatusCodes.Status400BadRequest);
 

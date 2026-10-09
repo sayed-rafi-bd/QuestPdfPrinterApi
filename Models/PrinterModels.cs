@@ -15,6 +15,13 @@ namespace QuestPdfPrinterApi.Models;
 public record PrinterInfo(string Name, string PortName, bool IsBluetooth);
 
 /// <summary>
+/// One paper size the printer's driver reports (GET /api/printers/paper-sizes). Name is the
+/// driver's exact wording, which is what SumatraPDF's "paper=" has to match - send it back as
+/// the print request's PageSize.
+/// </summary>
+public record PaperSizeInfo(string Name, double WidthMm, double HeightMm);
+
+/// <summary>
 /// Which way up a printed page is oriented. Print-only: forwarded straight through to
 /// SumatraPDF as the physical printout's orientation (see PrinterService.PrintFileAsync's
 /// remarks), independent of how the PDF was built (always the label template's page size).

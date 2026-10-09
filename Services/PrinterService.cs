@@ -7,6 +7,7 @@ namespace QuestPdfPrinterApi.Services;
 public interface IPrinterService
 {
     Task<List<PrinterInfo>> GetAvailablePrintersAsync(CancellationToken ct = default);
+    Task<List<PaperSizeInfo>> GetPaperSizesAsync(string printerName, CancellationToken ct = default);
     Task PrintFileAsync(
         string filePath,
         string printerName,
@@ -130,6 +131,51 @@ public class PrinterService : IPrinterService
     }
 
     /// <summary>
+    /// The paper sizes the printer's driver reports (exact driver names plus dimensions).
+    /// Uses .NET's PrinterSettings.PaperSizes through PowerShell (same approach as the printer
+    /// list), so it needs nothing from SumatraPDF and works with any SumatraPDF version.
+    /// </summary>
+    public async Task<List<PaperSizeInfo>> GetPaperSizesAsync(string printerName, CancellationToken ct = default)
+    {
+        // The printer name travels in an environment variable, not in the script text, so quotes
+        // or backslashes in it (e.g. \\server\printer) need no escaping. Width/Height are in
+        // hundredths of an inch.
+        const string script =
+            "Add-Type -AssemblyName System.Drawing; " +
+            "$ps = New-Object System.Drawing.Printing.PrinterSettings; " +
+            "$ps.PrinterName = $env:PRINTER_NAME; " +
+            "if (-not $ps.IsValid) { throw ('Printer not found: ' + $env:PRINTER_NAME) }; " +
+            "$items = @($ps.PaperSizes | ForEach-Object { [pscustomobject]@{ name = $_.PaperName; w = $_.Width; h = $_.Height } }); " +
+            "ConvertTo-Json -InputObject $items -Compress";
+
+        var output = await RunAsync(
+            "powershell",
+            new[] { "-NoProfile", "-Command", script },
+            ct,
+            new Dictionary<string, string> { ["PRINTER_NAME"] = printerName });
+
+        var result = new List<PaperSizeInfo>();
+        if (string.IsNullOrWhiteSpace(output))
+            return result;
+
+        var trimmed = output.Trim();
+        var json = trimmed.StartsWith('[') ? trimmed : $"[{trimmed}]";
+
+        using var doc = JsonDocument.Parse(json);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in doc.RootElement.EnumerateArray())
+        {
+            var name = e.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+            var w = e.TryGetProperty("w", out var wp) && wp.TryGetDouble(out var wv) ? wv : 0;
+            var h = e.TryGetProperty("h", out var hp) && hp.TryGetDouble(out var hv) ? hv : 0;
+            if (string.IsNullOrWhiteSpace(name) || !seen.Add(name))
+                continue;
+            result.Add(new PaperSizeInfo(name, Math.Round(w * 0.254, 1), Math.Round(h * 0.254, 1)));
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Sends the file to the printer via SumatraPDF's silent CLI printing. This rasterizes
     /// the page (see class remarks) - it is NOT a raw PDF/PostScript pass-through to the
     /// driver. If your printer and driver genuinely support PostScript/PDF natively and you
@@ -154,6 +200,9 @@ public class PrinterService : IPrinterService
     ///    own page size (ISO C7, 114mm x 81mm - see PageSizeResolver.BuildDefault).
     ///  - orientation: passed straight through as SumatraPDF's own "portrait"/"landscape"
     ///    content-rotation token.
+    ///    SumatraPDF only honours "paper=" when the text matches a name the driver reports (or,
+    ///    on recent builds, a custom size) and otherwise silently keeps the printer's current
+    ///    paper. So prefer a name from GetPaperSizesAsync, copied exactly.
     ///  - pageSize: passed straight through as SumatraPDF's "paper=" token, unvalidated -
     ///    any value SumatraPDF/the driver accepts (a name like "A4", or a custom size like
     ///    "76mm x 130mm"). Omitted entirely (no "paper=" token) when null/blank, leaving the
@@ -185,7 +234,10 @@ public class PrinterService : IPrinterService
             tokens.Add($"paper={pageSize}");
         var printSettings = string.Join(',', tokens);
 
-        await RunAsync(_sumatraPath, new[] { "-print-to", printerName, "-print-settings", printSettings, "-silent", filePath }, ct);
+        // -silent hides SumatraPDF's own error dialogs, so log exactly what is being asked of it.
+        Console.WriteLine($"[PRINT] printer '{printerName}', print-settings \"{printSettings}\"");
+
+        await RunAsync(_sumatraPath, new[] { "-print-to", printerName, "-print-settings", printSettings, filePath }, ct);
     }
 
     /// <summary>
@@ -228,7 +280,11 @@ public class PrinterService : IPrinterService
         }
     }
 
-    private static async Task<string> RunAsync(string fileName, IReadOnlyList<string> arguments, CancellationToken ct)
+    private static async Task<string> RunAsync(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        CancellationToken ct,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         var psi = new ProcessStartInfo(fileName)
         {
@@ -239,6 +295,9 @@ public class PrinterService : IPrinterService
         };
         foreach (var arg in arguments)
             psi.ArgumentList.Add(arg);
+        if (environment != null)
+            foreach (var (key, value) in environment)
+                psi.Environment[key] = value;
 
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException($"Failed to start process '{fileName}'");

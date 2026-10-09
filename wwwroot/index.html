@@ -62,12 +62,17 @@
         printerHint: '',
         printCount: 1,
         orientation: 'Landscape',
-        paperSelect: '',
+        papers: [],            // paper sizes the selected printer's driver reports
+        papersLoading: false,
+        papersError: '',
+        paperSelect: '',       // '' | 'paper:<driver name>' | 'name:<text>' | 'size:<text>' | '__custom'
         paperCustom: '',
         dpi: '',
         printStatus: newStatus(),
 
         init() {
+          // Whenever the printer changes, load the paper sizes that printer actually supports.
+          this.$watch('printer', (name) => this.loadPapers(name));
           this.loadServerInfo();
           this.refreshHotspot();
           this.loadPrinters();
@@ -238,10 +243,61 @@
           } finally { this.printersLoading = false; }
         },
 
+        async loadPapers(name) {
+          this.papers = []; this.papersError = ''; this.paperSelect = '';
+          if (!name) return;
+          this.papersLoading = true;
+          try {
+            const r = await timedFetch('/api/printers/paper-sizes?printer=' + encodeURIComponent(name));
+            if (!r.res.ok) throw new Error(msgOf(r.body, r.res));
+            if (this.printer !== name) return;            // printer changed while loading
+            this.papers = r.body;
+            await this.$nextTick();                       // wait for the <option>s to render
+            let saved = null;
+            try { saved = localStorage.getItem('paper:' + name); } catch {}
+            if (saved && this.paperOptionExists(saved)) this.paperSelect = saved;
+          } catch (err) {
+            if (this.printer === name) this.papersError = err.message;
+          } finally { this.papersLoading = false; }
+        },
+
+        // What the dropdown means for the print request: the paper text sent as pageSize.
+        // A size from the printer's own list is the driver's exact name, which SumatraPDF can match.
+        get selectedPaper() {
+          const sel = this.paperSelect;
+          const text = sel === '__custom' ? this.paperCustom.trim() : sel.replace(/^(paper|size|name):/, '');
+          if (sel && text) {
+            const p = sel.startsWith('paper:') ? this.papers.find(x => x.name === text) : null;
+            return { pageSize: text, desc: p ? this.paperLabel(p) : text };
+          }
+          return { pageSize: null, desc: sel === '__custom' ? 'none (custom size is empty)' : 'printer\'s current paper' };
+        },
+
+        get paperHint() {
+          if (this.papersLoading) return 'Loading paper sizes…';
+          if (this.papersError) return 'Could not read this printer’s paper sizes: ' + this.papersError;
+          if (this.paperSelect.startsWith('size:') || this.paperSelect === '__custom')
+            return 'Custom sizes are ignored by some drivers. If the paper does not change, pick one from this printer’s list.';
+          return '';
+        },
+
+        paperOptionExists(value) {
+          if (value.startsWith('paper:')) return this.papers.some(p => 'paper:' + p.name === value);
+          return value === '__custom' || value.startsWith('size:') || value.startsWith('name:');
+        },
+
+        savePaper() {
+          try { localStorage.setItem('paper:' + this.printer, this.paperSelect); } catch {}
+        },
+
+        paperLabel(p) {
+          return p.name + (p.widthMm && p.heightMm ? '  (' + p.widthMm + ' × ' + p.heightMm + ' mm)' : '');
+        },
+
         async print() {
           const st = this.printStatus;
           if (!this.printer) { st.text = 'Select a printer first.'; st.ok = false; return; }
-          const pageSize = this.paperSelect === '__custom' ? this.paperCustom.trim() : this.paperSelect;
+          const { pageSize, desc } = this.selectedPaper;
           st.text = 'Sending…'; st.ok = null;
           try {
             const r = await timedFetch('/api/mock/shipping-labels/print', {
@@ -250,12 +306,12 @@
               body: JSON.stringify({
                 printerName: this.printer,
                 count: parseInt(this.printCount, 10) || 1,
-                pageSize: pageSize || null,
+                pageSize,
                 orientation: this.orientation,
                 dpi: this.dpi ? parseInt(this.dpi, 10) : null
               })
             });
-            st.text = msgOf(r.body, r.res) + timeText(r); st.ok = r.res.ok;
+            st.text = msgOf(r.body, r.res) + ' · paper: ' + desc + timeText(r); st.ok = r.res.ok;
           } catch (err) { st.text = 'Request failed: ' + err.message; st.ok = false; }
         }
       }));
@@ -388,17 +444,36 @@
 
         <label class="block">
           <span class="block text-sm font-medium mb-1">Paper size</span>
-          <select x-model="paperSelect" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white">
+          <select x-model="paperSelect" @change="savePaper()" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white">
             <option value="">Printer's current paper</option>
-            <option value="114mm x 81mm">114mm x 81mm (template)</option>
-            <option value="76mm x 130mm">76mm x 130mm</option>
-            <option value="A4">A4</option>
-            <option value="A5">A5</option>
-            <option value="A6">A6</option>
-            <option value="__custom">Custom…</option>
+
+            <!-- Sizes the selected printer's driver reports: always honoured -->
+            <template x-if="papers.length">
+              <optgroup label="This printer's paper sizes">
+                <template x-for="p in papers" :key="p.name">
+                  <option :value="'paper:' + p.name" x-text="paperLabel(p)"></option>
+                </template>
+              </optgroup>
+            </template>
+
+            <!-- Printer list unavailable: plain names (SumatraPDF only honours these if the driver uses the same name) -->
+            <template x-if="!papers.length">
+              <optgroup label="Standard names">
+                <option value="name:A4">A4</option>
+                <option value="name:A5">A5</option>
+                <option value="name:A6">A6</option>
+              </optgroup>
+            </template>
+
+            <optgroup label="Custom size (driver must accept it)">
+              <option value="size:114mm x 81mm">114mm x 81mm (template)</option>
+              <option value="size:76mm x 130mm">76mm x 130mm</option>
+              <option value="__custom">Custom…</option>
+            </optgroup>
           </select>
           <input x-cloak x-show="paperSelect === '__custom'" type="text" x-model="paperCustom" placeholder="e.g. 100mm x 150mm"
                  class="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2">
+          <span class="block text-xs mt-1" :class="papersError ? 'text-red-600' : 'text-slate-500'" x-text="paperHint"></span>
         </label>
 
         <label class="block">
