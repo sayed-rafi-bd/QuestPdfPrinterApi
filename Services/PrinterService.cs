@@ -185,7 +185,7 @@ public class PrinterService : IPrinterService
             await TrySetDpiAsync(printerName, resolvedDpi, ct);
 
         var orientationToken = orientation == PageOrientation.Portrait ? "portrait" : "landscape";
-        var tokens = new List<string> { "noscale", orientationToken };
+        var tokens = new List<string> { "fit", orientationToken };
         if (!string.IsNullOrWhiteSpace(pageSize))
             tokens.Add($"paper={pageSize}");
         var printSettings = string.Join(',', tokens);

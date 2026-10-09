@@ -96,7 +96,7 @@
         <button id="printBtn" class="rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 font-medium">Print</button>
         <p id="printStatus" class="text-sm"></p>
       </div>
-      <p class="text-xs text-slate-500">Time shown for Print is until the job is queued, not until the printer finishes. Printing is always 1:1 (no rescale). Paper size and orientation only affect the print job, not the PDF.</p>
+      <p class="text-xs text-slate-500">Time shown for Print is until the job is queued, not until the printer finishes. Always prints with “Fit to paper”: the page is scaled to fit the selected paper. Paper size and orientation only affect the print job, not the PDF.</p>  
     </section>
   </div>
 
@@ -202,7 +202,7 @@
       for (const p of printers) {
         const o = document.createElement('option');
         o.value = p.name;
-        o.textContent = p.name + (p.isBluetooth ? '  (Bluetooth)' : '') + (p.portName ? '  — ' + p.portName : '');
+        o.textContent = p.name + (p.isBluetooth ? '  (Bluetooth)' : '');
         sel.appendChild(o);
       }
       const saved = localStorage.getItem('printer');
