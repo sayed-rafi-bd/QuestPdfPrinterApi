@@ -66,8 +66,6 @@ public class ShippingLabelPdfService : IShippingLabelPdfService
             {
                 col.Spacing(4);
                 col.Item().Element(e => BuildHeader(e, label));
-                col.Item().PaddingTop(1).BorderBottom(0.75f).BorderColor(DividerColor)
-                    .PaddingBottom(3).Text($"{label.RecipientName}\u3000様").FontSize(16).Bold();
                 col.Item().Element(e => BuildDetailBox(e, label));
             });
         });
@@ -75,7 +73,7 @@ public class ShippingLabelPdfService : IShippingLabelPdfService
 
     /// <summary>Small field caption (お届先, 運送会社, 出荷日, ...) rendered in the shared caption color.</summary>
     private static void Caption(IContainer container, string text) =>
-        container.Text(text).FontSize(9).FontColor(CaptionColor).LetterSpacing(0.02f);
+        container.Text(text).FontSize(6).FontColor(CaptionColor).LetterSpacing(0.02f);
 
     /// <summary>お届先 address block (left) + sort code / TEL / carrier name (right).</summary>
     private static void BuildHeader(IContainer container, ShippingLabel label)
@@ -90,21 +88,23 @@ public class ShippingLabelPdfService : IShippingLabelPdfService
                     r.ConstantItem(8);
                     r.AutoItem().Height(22).Image(BuildAddressBarcode(label.RecipientPostalCode));
                 });
-                c.Item().PaddingTop(2).Text($"\u3012{label.RecipientPostalCode}").FontSize(11);
-                c.Item().Text(label.RecipientAddress).FontSize(11.5f).Bold();
+                c.Item().PaddingTop(2).Text($"\u3012{label.RecipientPostalCode}").FontSize(8).Bold();
+                c.Item().Text(label.RecipientAddress).FontSize(8).Bold();
+                c.Item().Text($"{label.RecipientName}\u3000様").FontSize(8).Bold();
             });
 
             row.RelativeItem(2).Column(c =>
             {
-                c.Item().AlignRight().Row(r =>
+                c.Item().AlignRight().PaddingTop(-10).Row(r =>
                 {
                     r.AutoItem().Text(label.SortCodeMain).FontSize(30).Bold();
                     r.AutoItem().AlignBottom().PaddingBottom(2).Text(label.SortCodeSuffix).FontSize(15).Bold();
                 });
-                c.Item().AlignRight().Text($"TEL:{label.RecipientTel}").FontSize(9).FontColor(CaptionColor);
-                c.Item().AlignRight().PaddingTop(3).Background(AccentBackgroundColor)
-                    .PaddingVertical(2).PaddingHorizontal(8)
-                    .Text(label.CarrierDisplayName).FontSize(24).Bold();
+                c.Item().AlignRight().PaddingTop(-5).Text($"TEL:{label.RecipientTel}").FontSize(8)
+                    .FontColor(CaptionColor);
+                c.Item().AlignRight().Background(AccentBackgroundColor)
+                    .PaddingVertical(1).PaddingHorizontal(8)
+                    .Text(label.CarrierDisplayName).FontSize(15).Bold();
             });
         });
     }
@@ -122,13 +122,13 @@ public class ShippingLabelPdfService : IShippingLabelPdfService
     {
         container.Border(1f).BorderColor(Colors.Grey.Darken1).Column(col =>
         {
-            col.Item().BorderBottom(0.75f).BorderColor(DividerColor).Padding(5).Row(row =>
+            col.Item().BorderBottom(0.75f).BorderColor(DividerColor).PaddingHorizontal(5).Row(row =>
             {
                 row.RelativeItem(4).Column(c =>
                 {
                     c.Item().Element(e => Caption(e, "お問合せ No."));
-                    c.Item().PaddingTop(1).Height(20).Image(BuildTrackingBarcode(label.TrackingNumber));
-                    c.Item().AlignCenter().Text($"a{label.TrackingNumber}a").FontSize(8).LetterSpacing(0.12f);
+                    c.Item().PaddingTop(1).PaddingLeft(-3).Height(20).Image(BuildTrackingBarcode(label.TrackingNumber));
+                    c.Item().AlignLeft().Text(label.TrackingNumber).FontSize(6).LetterSpacing(0.12f);
                 });
                 row.ConstantItem(10);
                 row.RelativeItem(1).BorderLeft(0.75f).BorderColor(DividerColor).PaddingLeft(8).Column(c =>
@@ -136,27 +136,29 @@ public class ShippingLabelPdfService : IShippingLabelPdfService
                     c.Item().Element(e => Caption(e, "総個数"));
                     c.Item().AlignCenter().Background(ChipBackgroundColor).Padding(3).Row(r =>
                     {
-                        r.AutoItem().Text(label.TotalPieces.ToString()).FontSize(20).Bold();
-                        r.AutoItem().AlignBottom().PaddingBottom(1).Text("個口").FontSize(9);
+                        r.AutoItem().Text(label.TotalPieces.ToString()).FontSize(16).Bold();
+                        r.AutoItem().AlignBottom().PaddingBottom(1).Text("個口").FontSize(8);
                     });
                 });
             });
 
-            col.Item().BorderBottom(0.75f).BorderColor(DividerColor).Padding(5).Row(row =>
+            col.Item().BorderBottom(0.75f).BorderColor(DividerColor).PaddingHorizontal(5).PaddingVertical(2).Row(row =>
             {
                 row.AutoItem().Element(e => Caption(e, "運送会社"));
                 row.ConstantItem(8);
-                row.AutoItem().Text(label.CarrierServiceName).FontSize(11).Bold();
+                row.AutoItem().Text(label.CarrierServiceName).FontSize(6).Bold();
             });
 
             col.Item().Row(row =>
             {
                 row.RelativeItem(1).Column(c =>
                 {
-                    c.Item().BorderBottom(0.75f).BorderColor(DividerColor).Padding(5).Element(e => BuildDateBlock(e, label));
+                    c.Item().BorderBottom(0.75f).BorderColor(DividerColor).PaddingHorizontal(5).PaddingVertical(2)
+                        .Element(e => BuildDateBlock(e, label));
                     c.Item().Padding(5).Element(e => BuildRemarksBlock(e, label));
                 });
-                row.RelativeItem(1).BorderLeft(0.75f).BorderColor(DividerColor).Padding(5).Element(e => BuildSenderBlock(e, label));
+                row.RelativeItem(1).BorderLeft(0.75f).BorderColor(DividerColor).PaddingHorizontal(5).PaddingVertical(2)
+                    .Element(e => BuildSenderBlock(e, label));
             });
         });
     }
@@ -169,17 +171,17 @@ public class ShippingLabelPdfService : IShippingLabelPdfService
             c.Item().Row(r =>
             {
                 r.ConstantItem(62).Element(e => Caption(e, "出荷日"));
-                r.AutoItem().Text(label.ShipDate.ToString("yyyy/MM/dd")).FontSize(10);
+                r.AutoItem().Text(label.ShipDate.ToString("yyyy/MM/dd")).FontSize(6);
             });
             c.Item().Row(r =>
             {
                 r.ConstantItem(62).Element(e => Caption(e, "お届指定日"));
-                r.AutoItem().Text(label.DeliveryDate.ToString("yyyy/MM/dd")).FontSize(10);
+                r.AutoItem().Text(label.DeliveryDate.ToString("yyyy/MM/dd")).FontSize(6);
             });
             c.Item().Row(r =>
             {
                 r.ConstantItem(62).Element(e => Caption(e, "時間帯指定"));
-                r.AutoItem().Text(label.TimeSlot).FontSize(10);
+                r.AutoItem().Text(label.TimeSlot).FontSize(6);
             });
         });
     }
@@ -191,12 +193,14 @@ public class ShippingLabelPdfService : IShippingLabelPdfService
             c.Item().Element(e => Caption(e, "[備考]"));
             if (label.CodAmountYen is int yen)
             {
-                c.Item().PaddingTop(1).AlignCenter().Border(0.75f).BorderColor(Colors.Grey.Darken1)
+                c.Item().PaddingTop(1).AlignLeft().Border(0.75f).BorderColor(Colors.Grey.Darken1)
                     .Background(ChipBackgroundColor).PaddingVertical(2).PaddingHorizontal(10)
-                    .Text($"\u00a5{yen:N0}").FontSize(16).Bold();
+                    .Text($"\u00a5{yen:N0}").FontSize(6).Bold();
             }
+
             if (!string.IsNullOrEmpty(label.ShippingRequestNumber))
-                c.Item().PaddingTop(1).Text($"出荷依頼番号: {label.ShippingRequestNumber}").FontSize(8.5f).FontColor(CaptionColor);
+                c.Item().PaddingTop(1).Text($"出荷依頼番号: {label.ShippingRequestNumber}").FontSize(6)
+                    .FontColor(CaptionColor);
         });
     }
 
@@ -205,12 +209,12 @@ public class ShippingLabelPdfService : IShippingLabelPdfService
         container.Column(c =>
         {
             c.Spacing(1);
-            c.Item().Text(label.SenderName).FontSize(9.5f).Bold();
-            c.Item().Text($"\u3012{label.SenderPostalCode}").FontSize(9).FontColor(CaptionColor);
-            c.Item().Text(label.SenderAddressLine1).FontSize(9.5f);
+            c.Item().Text(label.SenderName).FontSize(6).Bold();
+            c.Item().Text($"\u3012{label.SenderPostalCode}").FontSize(6).FontColor(CaptionColor);
+            c.Item().Text(label.SenderAddressLine1).FontSize(6);
             if (!string.IsNullOrEmpty(label.SenderAddressLine2))
-                c.Item().Text(label.SenderAddressLine2).FontSize(9.5f);
-            c.Item().Text($"TEL: {label.SenderTel}").FontSize(9).FontColor(CaptionColor);
+                c.Item().Text(label.SenderAddressLine2).FontSize(6);
+            c.Item().Text($"TEL: {label.SenderTel}").FontSize(6).FontColor(CaptionColor);
         });
     }
 
